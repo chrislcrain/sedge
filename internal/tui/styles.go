@@ -43,8 +43,12 @@ var (
 			Bold(true)
 
 	backgroundStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")). // amber
-			Bold(true)
+			Foreground(lipgloss.Color("244")) // dim cool gray for idle background
+
+	waitingStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")). // amber — needs attention
+			Bold(true).
+			Blink(true)
 
 	dormantStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")) // dim gray

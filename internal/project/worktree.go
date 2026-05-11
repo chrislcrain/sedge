@@ -43,6 +43,7 @@ type WtState int
 const (
 	WtDormant    WtState = iota // no live tmux pane in this worktree
 	WtBackground                // live pane exists but it's not the visible slot
+	WtWaiting                   // live pane in background AND has new activity since last viewed
 	WtActive                    // currently visible next to sedge (the slot pane)
 )
 
@@ -52,6 +53,7 @@ type Worktree struct {
 	Path        string  // absolute worktree path
 	Branch      string  // e.g. "sedge/s1700000000"
 	State       WtState // populated by the TUI loader from tmux pane info
+	WindowID    string  // tmux window id for the background claude pane (when alive)
 }
 
 // ListWorktrees returns all sedge-branch worktrees for a repo. Only worktrees

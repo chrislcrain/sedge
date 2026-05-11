@@ -33,9 +33,10 @@ var helpEntries = [][2]string{
 	{"n  ", "add project"},
 	{"o  ", "open code pane"},
 	{"D  ", "delete (recycle)"},
+	{"X  ", "kill all · quit"},
 	{"e  ", "edit config"},
 	{"r  ", "reload"},
-	{"q  ", "quit"},
+	{"q  ", "quit (leave bg)"},
 }
 
 func renderHelp() string {

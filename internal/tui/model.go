@@ -36,6 +36,7 @@ const (
 	modePromptSession
 	modePromptProject
 	modeConfirmDelete
+	modeConfirmCleanExit
 )
 
 type Model struct {
@@ -103,6 +104,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePromptInput(msg)
 		case modeConfirmDelete:
 			return m.updateConfirmDelete(msg)
+		case modeConfirmCleanExit:
+			return m.updateConfirmCleanExit(msg)
 		}
 		// modeList
 		return m.updateList(msg)
@@ -176,8 +179,25 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case actOpenCode:
 		return m, openCodePaneCmd()
+	case actCleanExit:
+		m.mode = modeConfirmCleanExit
+		return m, nil
 	}
 	return m, nil
+}
+
+func (m Model) updateConfirmCleanExit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		root := m.cfg.WorktreesRoot
+		if root == "" {
+			root = "~/.sedge/worktrees"
+		}
+		return m, tea.Sequence(cleanExitCmd(root), tea.Quit)
+	default:
+		m.mode = modeList
+		return m, nil
+	}
 }
 
 func (m Model) updatePromptInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -285,6 +305,9 @@ func (m Model) View() string {
 			b.WriteString("\n")
 			b.WriteString(promptStyle.Render(fmt.Sprintf("Delete worktree %q and recycle its history? (y/N)", m.pendingWt.SessionName)))
 		}
+	case modeConfirmCleanExit:
+		b.WriteString("\n")
+		b.WriteString(promptStyle.Render("Kill all sedge claude sessions and quit? (y/N)"))
 	}
 
 	if m.err != nil {
@@ -321,6 +344,8 @@ func (m Model) renderRow(r row) string {
 		switch r.wt.State {
 		case project.WtActive:
 			dot = activeStyle.Render("●")
+		case project.WtWaiting:
+			dot = waitingStyle.Render("⚠")
 		case project.WtBackground:
 			dot = backgroundStyle.Render("◐")
 		}
@@ -407,13 +432,16 @@ func loadWorktreesCmd(p project.Project) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		live, _ := tmux.LivePaths()
 		activePath, _ := tmux.ActiveSlotPath(os.Getenv("TMUX_PANE"))
 		for i := range list {
+			winID, _, _ := tmux.FindWorktreeWindow(list[i].Path)
+			list[i].WindowID = winID
 			switch {
 			case list[i].Path == activePath:
 				list[i].State = project.WtActive
-			case live[list[i].Path]:
+			case winID != "" && tmux.WindowActivity(winID):
+				list[i].State = project.WtWaiting
+			case winID != "":
 				list[i].State = project.WtBackground
 			default:
 				list[i].State = project.WtDormant
@@ -465,19 +493,38 @@ func swapToWorktreeCmd(p project.Project, wt project.Worktree, cfg project.Confi
 	}
 }
 
-// spawnIntoSlot kills the current slot pane (if any) and spawns a fresh claude
-// pane against the given worktree. Used for both new-session and select flows.
+// spawnIntoSlot brings a claude session into the visible slot next to sedge.
+//
+// If a tmux window already exists for the worktree (the claude is alive in
+// the background), the existing pane is swapped into the slot — preserving
+// its conversation state and any in-flight work. Otherwise a new claude is
+// spawned in a background window (with --continue if there's prior history),
+// then swapped in.
+//
+// The previous slot pane, if any, is broken out into its own background
+// window so the claude running there keeps going.
 func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) tea.Msg {
 	sedgePane := os.Getenv("TMUX_PANE")
-	if err := tmux.KillSlotPane(sedgePane); err != nil {
+
+	// Try to find an existing window for this worktree.
+	_, paneID, err := tmux.FindWorktreeWindow(wt.Path)
+	if err != nil {
 		return errMsg{err}
 	}
+	if paneID != "" {
+		if err := tmux.SwapInPane(sedgePane, paneID); err != nil {
+			return errMsg{err}
+		}
+		return focusedMsg{pane: wt.SessionName}
+	}
+
+	// No live window — spawn one in the background, then swap it in.
 	promptFile, err := instructions.Resolve(p.Path, p.Name, wt.SessionName)
 	if err != nil {
 		return errMsg{err}
 	}
 	agentsJSON, _ := instructions.LoadAgentsJSON()
-	_, err = tmux.SpawnClaudePane(tmux.SpawnClaudeOpts{
+	_, newPane, err := tmux.SpawnClaudeWindow(tmux.SpawnClaudeOpts{
 		WorktreeDir:    wt.Path,
 		ProjectPath:    p.Path,
 		PromptFile:     promptFile,
@@ -490,16 +537,22 @@ func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) t
 	if err != nil {
 		return errMsg{err}
 	}
+	if err := tmux.SwapInPane(sedgePane, newPane); err != nil {
+		return errMsg{err}
+	}
 	return spawnedMsg{pane: wt.SessionName}
 }
 
 func deleteWorktreeCmd(p project.Project, wt project.Worktree) tea.Cmd {
 	return func() tea.Msg {
-		// If this worktree is the current slot, kill the slot first so its
-		// process releases the files.
+		// Kill whichever tmux container is holding this worktree's claude:
+		// the slot pane (if it's active) or the background window (if it's
+		// alive in the background).
 		sedgePane := os.Getenv("TMUX_PANE")
 		if activePath, _ := tmux.ActiveSlotPath(sedgePane); activePath == wt.Path {
 			_ = tmux.KillSlotPane(sedgePane)
+		} else if winID, _, err := tmux.FindWorktreeWindow(wt.Path); err == nil && winID != "" {
+			_ = tmux.KillWindow(winID)
 		}
 		if err := project.Recycle(p, wt); err != nil {
 			return errMsg{err}
@@ -533,6 +586,15 @@ func addProjectCmd(pathInput string) tea.Cmd {
 			return errMsg{err}
 		}
 		return reloadedMsg{cfg: cfg}
+	}
+}
+
+func cleanExitCmd(worktreesRoot string) tea.Cmd {
+	return func() tea.Msg {
+		_, _ = tmux.KillAllWorktreeWindows(expandUser(worktreesRoot))
+		// Also kill the slot pane if any (the visible one).
+		_ = tmux.KillSlotPane(os.Getenv("TMUX_PANE"))
+		return nil
 	}
 }
 
