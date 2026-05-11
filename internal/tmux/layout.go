@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -285,6 +286,28 @@ func KillAllWorktreeWindows(worktreesRoot string) (int, error) {
 		}
 	}
 	return killed, nil
+}
+
+// OpenSubAgentViewer splits the slot pane vertically (below) and runs
+// `sedge watch-agent <jsonlPath>` so the user can watch a sub-agent's
+// conversation alongside the parent claude.
+func OpenSubAgentViewer(sedgePaneID, jsonlPath string) error {
+	if sedgePaneID == "" {
+		return errNoSedgePane
+	}
+	slot, err := findSlotPane(sedgePaneID)
+	if err != nil {
+		return err
+	}
+	if slot == "" {
+		return errNoActiveWorktree
+	}
+	selfPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	_, err = run("split-window", "-v", "-l", "40%", "-t", slot, selfPath+" watch-agent "+jsonlPath)
+	return err
 }
 
 // OpenCodePane opens a shell pane to the right of the claude slot pane,

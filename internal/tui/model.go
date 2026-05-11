@@ -446,6 +446,12 @@ func (m *Model) activateRow() tea.Cmd {
 			return nil
 		}
 		return swapToWorktreeCmd(*r.project, *r.wt, m.cfg)
+	case rowSubAgent:
+		if !tmux.InsideTmux() {
+			m.err = fmt.Errorf("not inside tmux; restart sedge from a non-tmux shell")
+			return nil
+		}
+		return viewSubAgentCmd(r.wt.Path, r.subAgent.Description)
 	}
 	return nil
 }
@@ -634,6 +640,22 @@ func cleanExitCmd(worktreesRoot string) tea.Cmd {
 		// Also kill the slot pane if any (the visible one).
 		_ = tmux.KillSlotPane(os.Getenv("TMUX_PANE"))
 		return nil
+	}
+}
+
+func viewSubAgentCmd(wtPath, description string) tea.Cmd {
+	return func() tea.Msg {
+		path, err := agentlog.FindAgentFile(wtPath, description)
+		if err != nil {
+			return errMsg{err}
+		}
+		if path == "" {
+			return errMsg{fmt.Errorf("no agent file found for %q yet (claude may not have flushed it)", description)}
+		}
+		if err := tmux.OpenSubAgentViewer(os.Getenv("TMUX_PANE"), path); err != nil {
+			return errMsg{err}
+		}
+		return clearStat{}
 	}
 }
 

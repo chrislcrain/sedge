@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/chrislcrain/sedge/internal/agentlog"
 	"github.com/chrislcrain/sedge/internal/instructions"
 	"github.com/chrislcrain/sedge/internal/project"
 	"github.com/chrislcrain/sedge/internal/tmux"
@@ -39,6 +40,7 @@ func main() {
 		cmdRm(),
 		cmdEdit(),
 		cmdClean(),
+		cmdWatchAgent(),
 		cmdVersion(),
 	)
 
@@ -298,6 +300,17 @@ func liveSessionNames() map[string]bool {
 		}
 	}
 	return names
+}
+
+func cmdWatchAgent() *cobra.Command {
+	return &cobra.Command{
+		Use:   "watch-agent <jsonl-path>",
+		Short: "Tail and pretty-print a sub-agent session log",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			return agentlog.Watch(args[0])
+		},
+	}
 }
 
 func cmdVersion() *cobra.Command {
