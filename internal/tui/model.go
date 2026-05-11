@@ -278,25 +278,21 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	} else {
 		for i, r := range m.rows {
-			if i > 0 {
-				if r.kind == rowProject {
-					// Heavy, full-width border between projects.
-					b.WriteString(heavyDividerStyle.Render(strings.Repeat("━", dividerWidth(m.w))))
-					b.WriteString("\n")
-				} else if r.kind == rowWorktree && (m.rows[i-1].kind == rowWorktree || m.rows[i-1].kind == rowNewSession) {
-					// Light divider between sibling worktrees, aligned with
-					// the │ rail (6 columns of leading space — see renderRow
-					// for the parallel computation).
-					b.WriteString(treeBranchStyle.Render("      │ ") +
-						lightDividerStyle.Render(strings.Repeat("─", dividerWidth(m.w)-8)))
-					b.WriteString("\n")
-				}
+			if i > 0 && r.kind == rowProject {
+				// Subtle horizontal rule between projects — borders are
+				// muted now that the cursor is shown by row highlight.
+				b.WriteString(lightDividerStyle.Render(strings.Repeat("─", dividerWidth(m.w))))
+				b.WriteString("\n")
 			}
 			line := m.renderRow(r)
 			if i == m.cursor {
-				b.WriteString(selectedItemStyle.Render("› " + line))
+				style := selectedItemStyle
+				if m.w > 0 {
+					style = style.Width(m.w)
+				}
+				b.WriteString(style.Render(line))
 			} else {
-				b.WriteString(itemStyle.Render("  " + line))
+				b.WriteString(itemStyle.Render(line))
 			}
 			b.WriteString("\n")
 		}

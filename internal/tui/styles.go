@@ -10,9 +10,12 @@ var (
 
 	itemStyle = lipgloss.NewStyle().PaddingLeft(2)
 
+	// selectedItemStyle wraps the cursor row in a darkened background that
+	// spans the full pane width — neotree-style highlight, no leading arrow.
 	selectedItemStyle = lipgloss.NewStyle().
 				PaddingLeft(2).
-				Foreground(lipgloss.Color("170")).
+				Background(lipgloss.Color("237")).
+				Foreground(lipgloss.Color("231")). // near-white for contrast
 				Bold(true)
 
 	helpStyle = lipgloss.NewStyle().

@@ -3,19 +3,18 @@ package tui
 import "strings"
 
 // bannerLines is a pure-ASCII nameplate with a double (=== / |) border.
-// Each visible row is exactly 26 columns wide. The inner figlet-small
-// rendering of "sedge" is padded so the right column of the art never
-// touches the right border.
+// Each visible row is exactly 30 columns wide. Inner art is figlet "small"
+// style for "sedge" — all five letters.
 var bannerLines = []string{
-	"+========================+",
-	"|                        |",
-	"|              _         |",
-	"|   ___ ___ __| | __ _   |",
-	"|  (_-</ -_) _` |/ _` |  |",
-	"|  /__/\\___\\__,_|\\__, |  |",
-	"|                |___/   |",
-	"|                        |",
-	"+========================+",
+	"+============================+",
+	"|                            |",
+	"|              _             |",
+	"|   ___ ___ __| | __ _   ___ |",
+	"|  (_-</ -_) _` |/ _` |/ -_) |",
+	"|  /__/\\___\\__,_|\\__, |\\___| |",
+	"|                |___/       |",
+	"|                            |",
+	"+============================+",
 }
 
 func renderBanner() string {
