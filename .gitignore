@@ -1,0 +1,4 @@
+/sedge
+/dist/
+*.test
+*.out

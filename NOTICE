@@ -1,0 +1,8 @@
+sedge
+Copyright 2026 Chris Crain
+
+This product includes default agent instructions
+(internal/instructions/default_agents.md) that were inspired by themes in
+Coder Mux's AGENTS.md (https://github.com/coder/mux, AGPL-3.0). The sedge
+defaults are original prose, not derived text; the attribution is provided to
+credit the influence of Mux's design and operating principles.
