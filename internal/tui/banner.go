@@ -2,16 +2,20 @@ package tui
 
 import "strings"
 
-// bannerLines is the rendered header. Kept narrow enough to fit a 28-col
-// pane (sedge runs as a left pane around 25-30 cols wide).
+// bannerLines is a pure-ASCII nameplate with a double (=== / |) border.
+// Each visible row is exactly 26 columns wide. The inner figlet-small
+// rendering of "sedge" is padded so the right column of the art never
+// touches the right border.
 var bannerLines = []string{
-	"╭────────────────────────╮",
-	"│                        │",
-	"│   🦢  sedge  🪶       │",
-	"│  ────────────────────  │",
-	"│      tui · claude      │",
-	"│                        │",
-	"╰────────────────────────╯",
+	"+========================+",
+	"|                        |",
+	"|              _         |",
+	"|   ___ ___ __| | __ _   |",
+	"|  (_-</ -_) _` |/ _` |  |",
+	"|  /__/\\___\\__,_|\\__, |  |",
+	"|                |___/   |",
+	"|                        |",
+	"+========================+",
 }
 
 func renderBanner() string {

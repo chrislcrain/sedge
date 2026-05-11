@@ -147,16 +147,18 @@ func WindowActivity(windowID string) bool {
 	return strings.TrimSpace(string(out)) == "1"
 }
 
-// SwapInPane makes targetPaneID the visible slot next to sedge.
+// SwapInPane makes targetPaneID the visible slot next to sedge. slotWidthPct
+// is the percentage of the window the new pane (claude) takes; sedge gets the
+// remainder.
 //
 // Algorithm:
 //  1. If sedgePaneID and targetPaneID are already in the same window, just
 //     focus the target.
 //  2. Otherwise, break the current slot back to its own background window
 //     (named after its worktree session) so its process keeps running.
-//  3. join-pane the target into sedge's window at ~75% width.
+//  3. join-pane the target into sedge's window at slotWidthPct.
 //  4. Focus the newly-joined pane.
-func SwapInPane(sedgePaneID, targetPaneID string) error {
+func SwapInPane(sedgePaneID, targetPaneID string, slotWidthPct int) error {
 	if sedgePaneID == "" {
 		return fmt.Errorf("sedge pane id unknown (TMUX_PANE not set)")
 	}
@@ -195,7 +197,11 @@ func SwapInPane(sedgePaneID, targetPaneID string) error {
 		}
 	}
 
-	if _, err := run("join-pane", "-h", "-l", "75%", "-s", targetPaneID, "-t", sedgePaneID); err != nil {
+	if slotWidthPct <= 0 || slotWidthPct >= 100 {
+		slotWidthPct = 80
+	}
+	sizeArg := fmt.Sprintf("%d%%", slotWidthPct)
+	if _, err := run("join-pane", "-h", "-l", sizeArg, "-s", targetPaneID, "-t", sedgePaneID); err != nil {
 		return err
 	}
 	_, err = run("select-pane", "-t", targetPaneID)

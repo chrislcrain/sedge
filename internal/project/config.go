@@ -13,6 +13,7 @@ type Config struct {
 	DefaultPermissionMode string    `toml:"default_permission_mode"`
 	DefaultModel          string    `toml:"default_model,omitempty"`
 	WorktreesRoot         string    `toml:"worktrees_root,omitempty"`
+	SlotWidthPercent      int       `toml:"slot_width_percent,omitempty"` // claude pane size; sedge gets the rest. default 80.
 	Projects              []Project `toml:"projects,omitempty"`
 }
 
@@ -20,6 +21,7 @@ func defaults() Config {
 	return Config{
 		DefaultPermissionMode: "auto",
 		WorktreesRoot:         "~/.sedge/worktrees",
+		SlotWidthPercent:      80,
 	}
 }
 
@@ -44,6 +46,9 @@ func Load() (Config, error) {
 	}
 	if cfg.WorktreesRoot == "" {
 		cfg.WorktreesRoot = "~/.sedge/worktrees"
+	}
+	if cfg.SlotWidthPercent <= 0 || cfg.SlotWidthPercent >= 100 {
+		cfg.SlotWidthPercent = 80
 	}
 	return cfg, nil
 }

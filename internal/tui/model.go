@@ -512,7 +512,7 @@ func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) t
 		return errMsg{err}
 	}
 	if paneID != "" {
-		if err := tmux.SwapInPane(sedgePane, paneID); err != nil {
+		if err := tmux.SwapInPane(sedgePane, paneID, cfg.SlotWidthPercent); err != nil {
 			return errMsg{err}
 		}
 		return focusedMsg{pane: wt.SessionName}
@@ -537,7 +537,7 @@ func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) t
 	if err != nil {
 		return errMsg{err}
 	}
-	if err := tmux.SwapInPane(sedgePane, newPane); err != nil {
+	if err := tmux.SwapInPane(sedgePane, newPane, cfg.SlotWidthPercent); err != nil {
 		return errMsg{err}
 	}
 	return spawnedMsg{pane: wt.SessionName}
