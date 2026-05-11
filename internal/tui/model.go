@@ -564,7 +564,10 @@ func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) t
 	}
 
 	// No live window — spawn one in the background, then swap it in.
-	promptFile, err := instructions.Resolve(p.Path, p.Name, wt.SessionName)
+	promptFile, err := instructions.Resolve(p.Path, p.Name, wt.SessionName, instructions.DelegationPolicy{
+		MaxParallel: cfg.MaxParallelSubAgents,
+		MaxDepth:    cfg.MaxSubAgentDepth,
+	})
 	if err != nil {
 		return errMsg{err}
 	}

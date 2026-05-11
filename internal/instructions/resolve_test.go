@@ -21,7 +21,7 @@ func TestResolveLayersAndAppends(t *testing.T) {
 	mustWrite(t, filepath.Join(repo, "AGENTS.md"), "REPO\n")
 	mustWrite(t, filepath.Join(repo, "AGENTS.local.md"), "REPO-LOCAL\n")
 
-	out, err := Resolve(repo, "proj", "sess1")
+	out, err := Resolve(repo, "proj", "sess1", DelegationPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestResolveMissingFilesYieldsBuiltin(t *testing.T) {
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out, err := Resolve(repo, "proj", "sess1")
+	out, err := Resolve(repo, "proj", "sess1", DelegationPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
