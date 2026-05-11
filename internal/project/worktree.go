@@ -49,11 +49,20 @@ const (
 
 // Worktree describes a sedge-managed worktree discovered on disk.
 type Worktree struct {
-	SessionName string  // last path component, e.g. "s1700000000"
-	Path        string  // absolute worktree path
-	Branch      string  // e.g. "sedge/s1700000000"
-	State       WtState // populated by the TUI loader from tmux pane info
-	WindowID    string  // tmux window id for the background claude pane (when alive)
+	SessionName string         // last path component, e.g. "s1700000000"
+	Path        string         // absolute worktree path
+	Branch      string         // e.g. "sedge/s1700000000"
+	State       WtState        // populated by the TUI loader from tmux pane info
+	WindowID    string         // tmux window id for the background claude pane (when alive)
+	SubAgents   []SubAgentInfo // in-flight sub-agent calls (populated by the TUI loader)
+}
+
+// SubAgentInfo is a minimal projection of agentlog.SubAgent — kept here to
+// avoid the project package importing agentlog.
+type SubAgentInfo struct {
+	ID          string
+	Type        string
+	Description string
 }
 
 // ListWorktrees returns all sedge-branch worktrees for a repo. Only worktrees

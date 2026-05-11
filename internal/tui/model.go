@@ -10,23 +10,28 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/chrislcrain/sedge/internal/agentlog"
 	"github.com/chrislcrain/sedge/internal/instructions"
 	"github.com/chrislcrain/sedge/internal/project"
 	"github.com/chrislcrain/sedge/internal/tmux"
 )
+
+const refreshInterval = 3 * time.Second
 
 type rowKind int
 
 const (
 	rowProject rowKind = iota
 	rowWorktree
+	rowSubAgent // ephemeral row under a worktree showing an in-flight Agent call
 	rowNewSession
 )
 
 type row struct {
-	kind    rowKind
-	project *project.Project
-	wt      *project.Worktree
+	kind     rowKind
+	project  *project.Project
+	wt       *project.Worktree
+	subAgent *project.SubAgentInfo
 }
 
 type mode int
@@ -89,7 +94,13 @@ type (
 )
 
 func (m Model) Init() tea.Cmd {
-	return loadAllWorktreesCmd(m.cfg)
+	return tea.Batch(loadAllWorktreesCmd(m.cfg), tickCmd())
+}
+
+type tickMsg struct{}
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -142,6 +153,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = ""
 		m.err = nil
 		return m, nil
+
+	case tickMsg:
+		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), tickCmd())
 	}
 	return m, nil
 }
@@ -350,6 +364,15 @@ func (m Model) renderRow(r row) string {
 			dot = backgroundStyle.Render("◐")
 		}
 		return treeBranchStyle.Render("  │ ") + dot + " " + r.wt.SessionName
+	case rowSubAgent:
+		desc := r.subAgent.Description
+		if desc == "" {
+			desc = r.subAgent.Type
+		}
+		if max := 40; len(desc) > max {
+			desc = desc[:max-1] + "…"
+		}
+		return treeBranchStyle.Render("  │   ↳ ") + subAgentStyle.Render(r.subAgent.Type) + " " + dim(desc)
 	case rowNewSession:
 		return treeBranchStyle.Render("  │ ") + newSessionStyle.Render("+ new session")
 	}
@@ -367,6 +390,9 @@ func (m *Model) rebuild() {
 		wts := m.worktrees[p.Name]
 		for j := range wts {
 			rows = append(rows, row{kind: rowWorktree, project: p, wt: &wts[j]})
+			for k := range wts[j].SubAgents {
+				rows = append(rows, row{kind: rowSubAgent, project: p, wt: &wts[j], subAgent: &wts[j].SubAgents[k]})
+			}
 		}
 		rows = append(rows, row{kind: rowNewSession, project: p})
 	}
@@ -445,6 +471,19 @@ func loadWorktreesCmd(p project.Project) tea.Cmd {
 				list[i].State = project.WtBackground
 			default:
 				list[i].State = project.WtDormant
+			}
+			// Sub-agents only matter for live worktrees — dormant ones can't
+			// be running anything right now.
+			if list[i].State != project.WtDormant {
+				if subs, err := agentlog.ActiveSubAgents(list[i].Path); err == nil {
+					for _, s := range subs {
+						list[i].SubAgents = append(list[i].SubAgents, project.SubAgentInfo{
+							ID:          s.ID,
+							Type:        s.Type,
+							Description: s.Description,
+						})
+					}
+				}
 			}
 		}
 		return worktreesMsg{project: p.Name, list: list}

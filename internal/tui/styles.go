@@ -57,6 +57,10 @@ var (
 			Foreground(lipgloss.Color("39")). // blue
 			Italic(true)
 
+	subAgentStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("141")). // soft violet — distinguishes sub-agent rows
+			Bold(true)
+
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
 
