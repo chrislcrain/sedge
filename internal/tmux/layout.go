@@ -195,7 +195,7 @@ func SwapInPane(sedgePaneID, targetPaneID string) error {
 		}
 	}
 
-	if _, err := run("join-pane", "-h", "-p", "75", "-s", targetPaneID, "-t", sedgePaneID); err != nil {
+	if _, err := run("join-pane", "-h", "-l", "75%", "-s", targetPaneID, "-t", sedgePaneID); err != nil {
 		return err
 	}
 	_, err = run("select-pane", "-t", targetPaneID)
@@ -302,7 +302,7 @@ func OpenCodePane(sedgePaneID string) error {
 	if cwd == "" {
 		return errNoActiveWorktree
 	}
-	_, err = run("split-window", "-h", "-p", "40", "-t", slot, "-c", cwd)
+	_, err = run("split-window", "-h", "-l", "40%", "-t", slot, "-c", cwd)
 	return err
 }
 
