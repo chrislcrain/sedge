@@ -7,21 +7,38 @@ import (
 
 // SpawnClaudeOpts is everything SpawnClaudePane needs.
 type SpawnClaudeOpts struct {
-	WorktreeDir     string   // cwd for the new pane
+	WorktreeDir     string
 	ProjectPath     string   // passed to --add-dir
 	PromptFile      string   // passed to --append-system-prompt-file
 	SessionName     string   // passed to claude -n
 	PermissionMode  string   // claude --permission-mode value
-	Model           string   // optional: claude --model value
-	ExtraClaudeArgs []string // extra args appended to the claude invocation
-	Env             []string // additional KEY=VAL pairs (currently unused; tmux env handling is per-session)
-	AgentsJSON      string   // if non-empty, passed via `claude --agents <json>` so the orchestrator can delegate
+	Model           string   // optional: claude --model
+	ExtraClaudeArgs []string // appended to claude args
+	Env             []string // reserved; not currently applied
+	AgentsJSON      string   // if non-empty, passed via `claude --agents <json>`
 }
 
-// SpawnClaudePane splits the current tmux window horizontally and starts claude
-// in the new pane. Returns the pane id of the new pane.
-func SpawnClaudePane(opts SpawnClaudeOpts) (string, error) {
-	claudeArgs := []string{
+// SpawnClaudePane splits sedge's current tmux window horizontally and starts
+// claude in the new pane (right side, ~75% width). Returns the new pane id.
+//
+// Caller is responsible for first calling KillSlotPane to remove any existing
+// pane in the slot.
+func SpawnClaudePane(opts SpawnClaudeOpts) (paneID string, err error) {
+	args := []string{
+		"split-window", "-h", "-p", "75",
+		"-c", opts.WorktreeDir,
+		"-P", "-F", "#{pane_id}",
+	}
+	args = append(args, buildClaudeCmdline(opts)...)
+	out, runErr := exec.Command("tmux", args...).Output()
+	if runErr != nil {
+		return "", runErr
+	}
+	return trimNewline(string(out)), nil
+}
+
+func buildClaudeCmdline(opts SpawnClaudeOpts) []string {
+	args := []string{
 		"claude",
 		"--permission-mode", opts.PermissionMode,
 		"--add-dir", opts.ProjectPath,
@@ -29,32 +46,16 @@ func SpawnClaudePane(opts SpawnClaudeOpts) (string, error) {
 		"-n", opts.SessionName,
 	}
 	if opts.Model != "" {
-		claudeArgs = append(claudeArgs, "--model", opts.Model)
+		args = append(args, "--model", opts.Model)
 	}
 	if strings.TrimSpace(opts.AgentsJSON) != "" {
-		claudeArgs = append(claudeArgs, "--agents", opts.AgentsJSON)
+		args = append(args, "--agents", opts.AgentsJSON)
 	}
-	claudeArgs = append(claudeArgs, opts.ExtraClaudeArgs...)
-
-	args := []string{
-		"split-window",
-		"-h",
-		"-p", "75",
-		"-c", opts.WorktreeDir,
-		"-P", "-F", "#{pane_id}",
-	}
-	args = append(args, claudeArgs...)
-
-	cmd := exec.Command("tmux", args...)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return trimNewline(string(out)), nil
+	args = append(args, opts.ExtraClaudeArgs...)
+	return args
 }
 
 // LivePaths returns the set of pane_current_path values across all tmux panes.
-// Used by the TUI to decide which worktrees have an active claude session.
 func LivePaths() (map[string]bool, error) {
 	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_current_path}").Output()
 	if err != nil {
@@ -70,54 +71,88 @@ func LivePaths() (map[string]bool, error) {
 	return set, nil
 }
 
-// PaneRef identifies a specific tmux pane within a session.
-type PaneRef struct {
-	PaneID    string // e.g. "%17"
-	WindowID  string // e.g. "@4"
-	Session   string // e.g. "sedge"
-	CurPath   string // pane_current_path
-}
-
-// FindPaneByCwd looks across all tmux panes for one whose current working
-// directory is exactly `cwd`. Returns nil if no match.
-func FindPaneByCwd(cwd string) (*PaneRef, error) {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F",
-		"#{pane_id}|#{window_id}|#{session_name}|#{pane_current_path}").Output()
+// ActiveSlotPath returns the cwd of sedge's slot pane (the pane in sedge's
+// window that isn't sedge). Empty string if no slot exists.
+func ActiveSlotPath(sedgePaneID string) (string, error) {
+	if sedgePaneID == "" {
+		return "", nil
+	}
+	slot, err := findSlotPane(sedgePaneID)
+	if err != nil || slot == "" {
+		return "", err
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", slot, "#{pane_current_path}").Output()
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "|", 4)
-		if len(parts) != 4 {
-			continue
-		}
-		if parts[3] == cwd {
-			return &PaneRef{
-				PaneID:   parts[0],
-				WindowID: parts[1],
-				Session:  parts[2],
-				CurPath:  parts[3],
-			}, nil
-		}
-	}
-	return nil, nil
+	return strings.TrimSpace(string(out)), nil
 }
 
-// FocusPane moves the active selection to the given pane. Switches the client
-// to the right session/window first if needed.
-func FocusPane(p PaneRef) error {
-	if _, err := run("switch-client", "-t", p.Session+":"+p.WindowID); err != nil {
-		// If switch-client fails (e.g. not driving a client), fall back to
-		// select-window + select-pane on whatever client is attached.
-		if _, err := run("select-window", "-t", p.Session+":"+p.WindowID); err != nil {
-			return err
+// OpenCodePane splits the slot pane horizontally and opens a shell in the
+// same cwd, giving the user a panel to inspect the code while claude runs.
+// Errors if there is no slot pane (no active worktree).
+func OpenCodePane(sedgePaneID string) error {
+	if sedgePaneID == "" {
+		return errNoSedgePane
+	}
+	slot, err := findSlotPane(sedgePaneID)
+	if err != nil {
+		return err
+	}
+	if slot == "" {
+		return errNoActiveWorktree
+	}
+	_, err = run("split-window", "-h", "-p", "40", "-t", slot, "-c", "#{pane_current_path}")
+	return err
+}
+
+var (
+	errNoSedgePane      = newConstErr("sedge pane id unknown (TMUX_PANE not set)")
+	errNoActiveWorktree = newConstErr("no active worktree; select one first")
+)
+
+type constErr string
+
+func (c constErr) Error() string { return string(c) }
+func newConstErr(s string) error { return constErr(s) }
+
+// KillSlotPane kills the slot pane (the non-sedge pane in sedge's window) if
+// one exists. Safe to call when there is no slot — no-op in that case.
+func KillSlotPane(sedgePaneID string) error {
+	if sedgePaneID == "" {
+		return nil
+	}
+	slot, err := findSlotPane(sedgePaneID)
+	if err != nil || slot == "" {
+		return err
+	}
+	_, err = run("kill-pane", "-t", slot)
+	return err
+}
+
+func paneWindow(paneID string) (string, error) {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", paneID, "#{window_id}").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func findSlotPane(sedgePaneID string) (string, error) {
+	win, err := paneWindow(sedgePaneID)
+	if err != nil {
+		return "", err
+	}
+	out, err := exec.Command("tmux", "list-panes", "-t", win, "-F", "#{pane_id}").Output()
+	if err != nil {
+		return "", err
+	}
+	for _, id := range strings.Fields(string(out)) {
+		if id != sedgePaneID {
+			return id, nil
 		}
 	}
-	_, err := run("select-pane", "-t", p.PaneID)
-	return err
+	return "", nil
 }
 
 func trimNewline(s string) string {

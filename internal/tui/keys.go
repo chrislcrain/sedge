@@ -9,10 +9,12 @@ const (
 	actDown
 	actUp
 	actEnter
-	actAdd
 	actEdit
-	actQuit
 	actReload
+	actDelete     // capital D — delete worktree (only valid on rowWorktree)
+	actAddProject // n — new project prompt
+	actOpenCode   // o — spawn shell pane to the right of the claude slot pane
+	actQuit
 )
 
 func keyFor(msg tea.KeyMsg) keyAction {
@@ -23,12 +25,16 @@ func keyFor(msg tea.KeyMsg) keyAction {
 		return actUp
 	case "enter":
 		return actEnter
-	case "a":
-		return actAdd
 	case "e":
 		return actEdit
 	case "r":
 		return actReload
+	case "D":
+		return actDelete
+	case "n":
+		return actAddProject
+	case "o":
+		return actOpenCode
 	case "q", "ctrl+c", "esc":
 		return actQuit
 	}

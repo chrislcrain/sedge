@@ -53,7 +53,10 @@ func runRoot(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if insideTmux || tmux.InsideTmux() {
+	// The --inside-tmux flag is set by sedge re-execing itself in a fresh
+	// tmux window/session. At that point we know we are in our own window
+	// with a clean slot, so we run the TUI directly.
+	if insideTmux {
 		m, err := tui.New()
 		if err != nil {
 			return err
@@ -66,6 +69,14 @@ func runRoot(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Warm start: already inside a tmux session but not in our dedicated
+	// window. Create a new window for sedge so the slot pane is unambiguous.
+	if tmux.InsideTmux() {
+		return tmux.SpawnWindowAndSwitch(self)
+	}
+
+	// Cold start: no tmux at all. Spawn a new session.
 	return tmux.SpawnAndAttach(tmux.DefaultSessionName, self)
 }
 

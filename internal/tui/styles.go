@@ -19,9 +19,6 @@ var (
 			Foreground(lipgloss.Color("241")).
 			MarginTop(1)
 
-	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
-
 	errStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196")).
 			MarginTop(1)
@@ -30,17 +27,37 @@ var (
 			Foreground(lipgloss.Color("241")).
 			Italic(true)
 
-	dividerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("238"))
+	heavyDividerStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("244")). // medium gray, more visible
+				Bold(true)
 
-	busyStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("82")). // green
+	lightDividerStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("239"))
+
+	treeBranchStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("242"))
+
+	// dot indicators
+	activeStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("82")). // bright green
 			Bold(true)
 
-	idleStyle = lipgloss.NewStyle().
+	backgroundStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")). // amber
+			Bold(true)
+
+	dormantStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")) // dim gray
 
 	newSessionStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("39")). // blue
 			Italic(true)
+
+	dimStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241"))
+
+	promptStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("212")).
+			Bold(true).
+			MarginTop(1)
 )

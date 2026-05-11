@@ -37,12 +37,21 @@ func EnsureWorktree(repoPath, defaultBranch, wtPath, sessionName string) error {
 	return nil
 }
 
+// WtState describes the runtime state of a worktree's claude session.
+type WtState int
+
+const (
+	WtDormant    WtState = iota // no live tmux pane in this worktree
+	WtBackground                // live pane exists but it's not the visible slot
+	WtActive                    // currently visible next to sedge (the slot pane)
+)
+
 // Worktree describes a sedge-managed worktree discovered on disk.
 type Worktree struct {
-	SessionName string // last path component, e.g. "s1700000000"
-	Path        string // absolute worktree path
-	Branch      string // e.g. "sedge/s1700000000"
-	Busy        bool   // set by the TUI loader when a live tmux pane has this worktree as cwd
+	SessionName string  // last path component, e.g. "s1700000000"
+	Path        string  // absolute worktree path
+	Branch      string  // e.g. "sedge/s1700000000"
+	State       WtState // populated by the TUI loader from tmux pane info
 }
 
 // ListWorktrees returns all sedge-branch worktrees for a repo. Only worktrees

@@ -14,6 +14,15 @@ func HasSession(name string) bool {
 	return cmd.Run() == nil
 }
 
+// SpawnWindowAndSwitch creates a new tmux window in the current session named
+// "sedge", runs `selfPath --inside-tmux` inside it, and switches focus to it.
+// Used for the warm-start case so sedge always lives in its own dedicated
+// window with a clean slot.
+func SpawnWindowAndSwitch(selfPath string) error {
+	_, err := run("new-window", "-n", "sedge", selfPath+" --inside-tmux")
+	return err
+}
+
 // SpawnAndAttach creates a detached tmux session named `name` whose first pane
 // runs `selfPath --inside-tmux`, then replaces the current process with
 // `tmux attach-session -t name`.
