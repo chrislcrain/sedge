@@ -76,6 +76,9 @@ func ensureInit() error {
 	if err := instructions.WriteDefaultGlobalIfMissing(); err != nil {
 		return err
 	}
+	if err := instructions.WriteDefaultAgentsIfMissing(); err != nil {
+		return err
+	}
 	cfgPath, err := xdg.ConfigFile()
 	if err != nil {
 		return err

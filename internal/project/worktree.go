@@ -37,6 +37,56 @@ func EnsureWorktree(repoPath, defaultBranch, wtPath, sessionName string) error {
 	return nil
 }
 
+// Worktree describes a sedge-managed worktree discovered on disk.
+type Worktree struct {
+	SessionName string // last path component, e.g. "s1700000000"
+	Path        string // absolute worktree path
+	Branch      string // e.g. "sedge/s1700000000"
+	Busy        bool   // set by the TUI loader when a live tmux pane has this worktree as cwd
+}
+
+// ListWorktrees returns all sedge-branch worktrees for a repo. Only worktrees
+// whose branch begins with "sedge/" are included; the main worktree and any
+// other branches are filtered out.
+func ListWorktrees(repoPath string) ([]Worktree, error) {
+	out, err := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return nil, fmt.Errorf("git worktree list: %w", err)
+	}
+	var results []Worktree
+	var cur Worktree
+	flush := func() {
+		if cur.Path != "" && strings.HasPrefix(cur.Branch, "sedge/") {
+			cur.SessionName = filepath.Base(cur.Path)
+			results = append(results, cur)
+		}
+		cur = Worktree{}
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			flush()
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			cur.Path = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch refs/heads/"):
+			cur.Branch = strings.TrimPrefix(line, "branch refs/heads/")
+		}
+	}
+	flush()
+	return results, nil
+}
+
+// RemoveWorktree runs `git worktree remove --force` for the given path.
+func RemoveWorktree(repoPath, wtPath string) error {
+	out, err := exec.Command("git", "-C", repoPath, "worktree", "remove", "--force", wtPath).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git worktree remove: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // DetectDefaultBranch returns the repo's default branch (main/master fallback).
 func DetectDefaultBranch(repoPath string) string {
 	out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").Output()
