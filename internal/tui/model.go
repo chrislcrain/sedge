@@ -201,6 +201,14 @@ func (m Model) updatePromptInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.Blur()
 			return m, addProjectCmd(value)
 		}
+	case tea.KeyTab:
+		if m.mode == modePromptProject {
+			if completed, ok := completePath(m.input.Value()); ok {
+				m.input.SetValue(completed)
+				m.input.SetCursor(len(completed))
+			}
+			return m, nil
+		}
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
@@ -226,7 +234,7 @@ func (m Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("sedge 🦢"))
+	b.WriteString(renderBanner())
 	b.WriteString("\n")
 
 	if len(m.cfg.Projects) == 0 {
@@ -261,7 +269,7 @@ func (m Model) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("j/k · enter expand/swap/new · n project · o code pane · D delete · e edit · r reload · q quit"))
+	b.WriteString(renderHelp())
 
 	switch m.mode {
 	case modePromptSession:
@@ -589,4 +597,71 @@ func expandUser(p string) string {
 		}
 	}
 	return p
+}
+
+// completePath returns the longest common prefix of all filesystem entries
+// matching the user-typed path. The returned string preserves the user's
+// "~/" prefix if present. Returns ok=false when no candidates match.
+func completePath(input string) (string, bool) {
+	raw := strings.TrimSpace(input)
+	if raw == "" {
+		return "", false
+	}
+	usedTilde := strings.HasPrefix(raw, "~/")
+	expanded := expandUser(raw)
+
+	dir := filepath.Dir(expanded)
+	prefix := filepath.Base(expanded)
+	// Special case: when input ends with "/", list inside that dir.
+	if strings.HasSuffix(expanded, "/") {
+		dir = strings.TrimSuffix(expanded, "/")
+		prefix = ""
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", false
+	}
+	var matches []string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") && !strings.HasPrefix(prefix, ".") {
+			continue
+		}
+		if strings.HasPrefix(name, prefix) {
+			matches = append(matches, name)
+		}
+	}
+	if len(matches) == 0 {
+		return "", false
+	}
+	lcp := longestCommonPrefix(matches)
+	if lcp == "" {
+		return "", false
+	}
+	full := filepath.Join(dir, lcp)
+	if info, err := os.Stat(full); err == nil && info.IsDir() && len(matches) == 1 {
+		full += "/"
+	}
+	if usedTilde {
+		if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(full, home) {
+			return "~" + strings.TrimPrefix(full, home), true
+		}
+	}
+	return full, true
+}
+
+func longestCommonPrefix(strs []string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	prefix := strs[0]
+	for _, s := range strs[1:] {
+		for !strings.HasPrefix(s, prefix) {
+			if len(prefix) == 0 {
+				return ""
+			}
+			prefix = prefix[:len(prefix)-1]
+		}
+	}
+	return prefix
 }

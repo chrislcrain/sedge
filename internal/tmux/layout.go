@@ -93,8 +93,8 @@ func ActiveSlotPath(sedgePaneID string) (string, error) {
 }
 
 // OpenCodePane splits the slot pane horizontally and opens a shell in the
-// same cwd, giving the user a panel to inspect the code while claude runs.
-// Errors if there is no slot pane (no active worktree).
+// slot pane's actual cwd (which sedge sets to the worktree dir when spawning
+// claude). Errors if there is no slot pane (no active worktree).
 func OpenCodePane(sedgePaneID string) error {
 	if sedgePaneID == "" {
 		return errNoSedgePane
@@ -106,7 +106,15 @@ func OpenCodePane(sedgePaneID string) error {
 	if slot == "" {
 		return errNoActiveWorktree
 	}
-	_, err = run("split-window", "-h", "-p", "40", "-t", slot, "-c", "#{pane_current_path}")
+	cwdOut, err := exec.Command("tmux", "display-message", "-p", "-t", slot, "#{pane_current_path}").Output()
+	if err != nil {
+		return err
+	}
+	cwd := strings.TrimSpace(string(cwdOut))
+	if cwd == "" {
+		return errNoActiveWorktree
+	}
+	_, err = run("split-window", "-h", "-p", "40", "-t", slot, "-c", cwd)
 	return err
 }
 

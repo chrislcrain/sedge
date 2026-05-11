@@ -60,4 +60,15 @@ var (
 			Foreground(lipgloss.Color("212")).
 			Bold(true).
 			MarginTop(1)
+
+	bannerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("212")).
+			Bold(true)
+
+	helpKeyStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")). // amber, matches background dot
+			Bold(true)
+
+	helpDescStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241"))
 )

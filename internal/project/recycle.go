@@ -68,13 +68,20 @@ func Recycle(p Project, wt Worktree) error {
 	return nil
 }
 
-// encodeClaudeProject mirrors Claude Code's on-disk project-dir scheme. Both
-// "/" and "." are replaced with "-", so /Users/me/.sedge/wt becomes
-// "-Users-me--sedge-wt".
+// encodeClaudeProject mirrors Claude Code's on-disk project-dir scheme.
+// Non-alphanumeric path separators ('/', '.', ' ', '~') all become '-'.
 func encodeClaudeProject(path string) string {
-	s := strings.ReplaceAll(path, "/", "-")
-	s = strings.ReplaceAll(s, ".", "-")
-	return s
+	var b strings.Builder
+	b.Grow(len(path))
+	for _, r := range path {
+		switch r {
+		case '/', '.', ' ', '~':
+			b.WriteRune('-')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // HasClaudeHistory reports whether ~/.claude/projects/<encoded-cwd>/ exists
