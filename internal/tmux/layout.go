@@ -16,6 +16,7 @@ type SpawnClaudeOpts struct {
 	ExtraClaudeArgs []string // appended to claude args
 	Env             []string // reserved; not currently applied
 	AgentsJSON      string   // if non-empty, passed via `claude --agents <json>`
+	Resume          bool     // if true, pass --continue so claude resumes the most recent conversation in WorktreeDir
 }
 
 // SpawnClaudePane splits sedge's current tmux window horizontally and starts
@@ -50,6 +51,9 @@ func buildClaudeCmdline(opts SpawnClaudeOpts) []string {
 	}
 	if strings.TrimSpace(opts.AgentsJSON) != "" {
 		args = append(args, "--agents", opts.AgentsJSON)
+	}
+	if opts.Resume {
+		args = append(args, "--continue")
 	}
 	args = append(args, opts.ExtraClaudeArgs...)
 	return args

@@ -71,3 +71,19 @@ func Recycle(p Project, wt Worktree) error {
 func encodeClaudeProject(path string) string {
 	return strings.ReplaceAll(path, "/", "-")
 }
+
+// HasClaudeHistory reports whether ~/.claude/projects/<encoded-cwd>/ exists
+// and contains any session files. Used to decide whether to pass --continue
+// when spawning claude in a worktree.
+func HasClaudeHistory(wtPath string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	dir := filepath.Join(home, ".claude", "projects", encodeClaudeProject(wtPath))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	return len(entries) > 0
+}

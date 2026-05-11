@@ -477,6 +477,7 @@ func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) t
 		PermissionMode: cfg.DefaultPermissionMode,
 		Model:          cfg.DefaultModel,
 		AgentsJSON:     agentsJSON,
+		Resume:         project.HasClaudeHistory(wt.Path),
 	})
 	if err != nil {
 		return errMsg{err}
