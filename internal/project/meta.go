@@ -3,13 +3,87 @@ package project
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 )
+
+// createPRURLRe matches GitHub's "Create a pull request" hint that `git push`
+// emits to stderr when pushing a brand-new branch.
+var createPRURLRe = regexp.MustCompile(`https?://[^\s]+/pull/new/[^\s]+`)
+
+// extractCreatePRURL pulls the "Create a pull request" URL out of git push
+// stderr, or returns "" if none is present (e.g., subsequent push to an
+// existing branch, or a non-GitHub remote).
+func extractCreatePRURL(pushOutput string) string {
+	return createPRURLRe.FindString(pushOutput)
+}
+
+// compareURLForOrigin derives a GitHub-style compare URL
+// (https://<host>/<owner>/<repo>/compare/<base>...<head>?expand=1) from a
+// repo's origin URL. Returns "" for non-GitHub remotes or unrecognised URL
+// formats. Used as a fallback when gh is unavailable and git push didn't
+// emit a "Create a pull request" hint (i.e. the branch was already on origin).
+func compareURLForOrigin(workDir, base, head string) string {
+	out, err := exec.Command("git", "-C", workDir, "remote", "get-url", "origin").Output()
+	if err != nil {
+		return ""
+	}
+	raw := strings.TrimSpace(string(out))
+	host, owner, repo := parseRemote(raw)
+	if host == "" || owner == "" || repo == "" {
+		return ""
+	}
+	return fmt.Sprintf("https://%s/%s/%s/compare/%s...%s?expand=1",
+		host, owner, repo, url.PathEscape(base), url.PathEscape(head))
+}
+
+// parseRemote returns (host, owner, repo) from a git remote URL. Handles
+// SSH (git@host:owner/repo.git), ssh:// (ssh://git@host/owner/repo.git),
+// and https:// forms. Strips any trailing ".git". Returns zero values if
+// the URL doesn't look like a host/owner/repo triple.
+func parseRemote(raw string) (host, owner, repo string) {
+	s := raw
+	switch {
+	case strings.HasPrefix(s, "git@"):
+		// git@host:owner/repo.git
+		s = strings.TrimPrefix(s, "git@")
+		i := strings.Index(s, ":")
+		if i < 0 {
+			return "", "", ""
+		}
+		host, s = s[:i], s[i+1:]
+	case strings.HasPrefix(s, "ssh://"):
+		s = strings.TrimPrefix(s, "ssh://")
+		s = strings.TrimPrefix(s, "git@")
+		i := strings.Index(s, "/")
+		if i < 0 {
+			return "", "", ""
+		}
+		host, s = s[:i], s[i+1:]
+	case strings.HasPrefix(s, "https://"), strings.HasPrefix(s, "http://"):
+		s = strings.TrimPrefix(s, "https://")
+		s = strings.TrimPrefix(s, "http://")
+		i := strings.Index(s, "/")
+		if i < 0 {
+			return "", "", ""
+		}
+		host, s = s[:i], s[i+1:]
+	default:
+		return "", "", ""
+	}
+	s = strings.TrimSuffix(s, ".git")
+	parts := strings.SplitN(s, "/", 2)
+	if len(parts) != 2 {
+		return "", "", ""
+	}
+	return host, parts[0], parts[1]
+}
 
 // existingPRURL returns the URL of an open PR on origin with the given
 // head/base, or "" if none exists or gh can't tell us. Best-effort: any gh
@@ -201,21 +275,36 @@ func ShipWorktree(repoPath, wtPath string, m WorktreeMeta) (string, error) {
 	if err != nil {
 		return strings.TrimSpace(string(pushOut)), fmt.Errorf("git push: %w", err)
 	}
+	pushOutput := strings.TrimSpace(string(pushOut))
+
 	// If an open PR already exists for this head→base, the push above just
 	// updated it. Don't try to create a duplicate.
 	if url := existingPRURL(pushDir, m.WorktreeBranch, m.SourceBranch); url != "" {
 		return "updated PR " + url, nil
 	}
-	// Create the PR. --fill auto-derives title/body from the branch's commits.
+
+	// Try `gh pr create`. --fill auto-derives title/body from the commits.
 	cmd := exec.Command("gh", "pr", "create",
 		"--base", m.SourceBranch,
 		"--head", m.WorktreeBranch,
 		"--fill")
 	cmd.Dir = pushDir
 	prOut, err := cmd.CombinedOutput()
-	if err != nil {
-		return strings.TrimSpace(string(prOut)), fmt.Errorf("gh pr create: %w", err)
+	if err == nil {
+		return strings.TrimSpace(string(prOut)), nil
 	}
-	return strings.TrimSpace(string(prOut)), nil
+
+	// gh failed (missing, not authed, or otherwise unhappy). Fall back to
+	// the "create PR" hint URL that git push itself prints — same behaviour
+	// as pushing manually. If that's not present (the branch already exists
+	// on origin so GitHub didn't emit the hint), synthesise a compare URL
+	// from the origin remote.
+	if hint := extractCreatePRURL(pushOutput); hint != "" {
+		return "pushed; open PR at " + hint, nil
+	}
+	if hint := compareURLForOrigin(pushDir, m.SourceBranch, m.WorktreeBranch); hint != "" {
+		return "pushed; open PR at " + hint, nil
+	}
+	return "pushed; PR not auto-created (gh: " + strings.TrimSpace(string(prOut)) + ")", nil
 }
 
