@@ -69,6 +69,7 @@ const (
 	modePromptWorktreePath
 	modePromptProject
 	modeConfirmDelete
+	modeConfirmDeleteProject
 	modeConfirmCleanExit
 	modeConfirmMerge
 )
@@ -165,6 +166,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSelectBranch(msg)
 		case modeConfirmDelete:
 			return m.updateConfirmDelete(msg)
+		case modeConfirmDeleteProject:
+			return m.updateConfirmDeleteProject(msg)
 		case modeConfirmCleanExit:
 			return m.updateConfirmCleanExit(msg)
 		case modeConfirmMerge:
@@ -250,10 +253,16 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case actReload:
 		return m, tea.Batch(reloadCfgCmd(), loadAllWorktreesCmd(m.cfg))
 	case actDelete:
-		if r, ok := m.currentRow(); ok && r.kind == rowWorktree {
-			m.pendingWt = r.wt
-			m.pendingWtP = r.project
-			m.mode = modeConfirmDelete
+		if r, ok := m.currentRow(); ok {
+			switch r.kind {
+			case rowWorktree:
+				m.pendingWt = r.wt
+				m.pendingWtP = r.project
+				m.mode = modeConfirmDelete
+			case rowProject:
+				m.pendingWtP = r.project
+				m.mode = modeConfirmDeleteProject
+			}
 		}
 		return m, nil
 	case actMerge:
@@ -278,6 +287,22 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m Model) updateConfirmDeleteProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		p := m.pendingWtP
+		m.mode = modeList
+		m.pendingWtP = nil
+		// Use the cached worktree list so the cmd doesn't re-shell.
+		wts := append([]project.Worktree(nil), m.worktrees[p.Name]...)
+		return m, deleteProjectCmd(*p, wts)
+	default:
+		m.mode = modeList
+		m.pendingWtP = nil
+		return m, nil
+	}
 }
 
 func (m Model) updateConfirmCleanExit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -603,6 +628,18 @@ func (m Model) renderModePrompt() string {
 		if m.pendingWt != nil {
 			b.WriteString("\n")
 			b.WriteString(promptStyle.Render(fmt.Sprintf("Delete worktree %q and recycle its history? (y/N)", m.pendingWt.SessionName)))
+		}
+	case modeConfirmDeleteProject:
+		if m.pendingWtP != nil {
+			n := len(m.worktrees[m.pendingWtP.Name])
+			detail := "no worktrees to recycle"
+			if n == 1 {
+				detail = "will recycle 1 worktree"
+			} else if n > 1 {
+				detail = fmt.Sprintf("will recycle %d worktrees", n)
+			}
+			b.WriteString("\n")
+			b.WriteString(promptStyle.Render(fmt.Sprintf("Unregister project %q? (%s; the on-disk repo stays put) (y/N)", m.pendingWtP.Name, detail)))
 		}
 	case modeConfirmMerge:
 		if m.pendingWt != nil {
@@ -1054,6 +1091,34 @@ func refocusPaneCmd(paneID string) tea.Cmd {
 		_ = tmux.FocusPane(paneID)
 		return nil
 	})
+}
+
+// deleteProjectCmd recycles each known worktree of the project (killing any
+// live tmux pane for it first) and unregisters the project from
+// ~/.sedge/config.toml. The on-disk repo at p.Path is never touched.
+func deleteProjectCmd(p project.Project, wts []project.Worktree) tea.Cmd {
+	return func() tea.Msg {
+		sedgePane := os.Getenv("TMUX_PANE")
+		for _, wt := range wts {
+			if activePath, _ := tmux.ActiveSlotPath(sedgePane); activePath == wt.Path {
+				_ = tmux.KillSlotPane(sedgePane)
+			} else if winID, _, err := tmux.FindWorktreeWindow(wt.Path); err == nil && winID != "" {
+				_ = tmux.KillWindow(winID)
+			}
+			_ = project.Recycle(p, wt)
+		}
+		cfg, err := project.Load()
+		if err != nil {
+			return errMsg{err}
+		}
+		if err := cfg.Remove(p.Name); err != nil {
+			return errMsg{err}
+		}
+		if err := project.Save(cfg); err != nil {
+			return errMsg{err}
+		}
+		return reloadedMsg{cfg: cfg}
+	}
 }
 
 func cleanExitCmd(worktreesRoot string) tea.Cmd {
