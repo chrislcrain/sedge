@@ -10,11 +10,36 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/chrislcrain/sedge/internal/agentlog"
 	"github.com/chrislcrain/sedge/internal/instructions"
 	"github.com/chrislcrain/sedge/internal/project"
 	"github.com/chrislcrain/sedge/internal/tmux"
 )
+
+const (
+	highlightBgCode = "\x1b[48;5;237m" // dark gray
+	highlightBold   = "\x1b[1m"
+	ansiReset       = "\x1b[0m"
+)
+
+// highlightRow wraps a row in the selection background and bold weight,
+// padded to fill the pane width. Inner styles in `line` emit their own
+// `\x1b[0m` resets which would otherwise clear the bg/bold mid-line; we
+// re-apply both after every internal reset.
+func highlightRow(line string, width int) string {
+	open := highlightBgCode + highlightBold
+	prefixed := "  " + line
+	// After every full-reset emitted by an inner style, re-open bg + bold so
+	// the highlight survives across segment boundaries.
+	withBg := strings.ReplaceAll(prefixed, ansiReset, ansiReset+open)
+	visible := lipgloss.Width(withBg)
+	pad := ""
+	if width > visible {
+		pad = strings.Repeat(" ", width-visible)
+	}
+	return open + withBg + pad + ansiReset
+}
 
 const refreshInterval = 3 * time.Second
 
@@ -286,11 +311,11 @@ func (m Model) View() string {
 			}
 			line := m.renderRow(r)
 			if i == m.cursor {
-				style := selectedItemStyle
-				if m.w > 0 {
-					style = style.Width(m.w)
+				w := m.w
+				if w <= 0 {
+					w = lipgloss.Width(line) + 4
 				}
-				b.WriteString(style.Render(line))
+				b.WriteString(highlightRow(line, w))
 			} else {
 				b.WriteString(itemStyle.Render(line))
 			}
