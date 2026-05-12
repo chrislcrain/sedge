@@ -255,6 +255,22 @@ func slotWindowName(paneID string) string {
 	return filepath.Base(p)
 }
 
+// OpenShellPaneAt splits a shell pane in the given cwd. If a slot pane is
+// already next to sedge, the new pane lands to the right of it; otherwise
+// it lands to the right of sedge directly. Used by `o` on a project row to
+// open a shell at the project's path even when no claude session is selected.
+func OpenShellPaneAt(sedgePaneID, cwd string) error {
+	if sedgePaneID == "" {
+		return errNoSedgePane
+	}
+	target := sedgePaneID
+	if slot, _ := findSlotPane(sedgePaneID); slot != "" {
+		target = slot
+	}
+	_, err := run("split-window", "-h", "-l", "40%", "-t", target, "-c", cwd)
+	return err
+}
+
 // FocusPane explicitly selects a tmux pane, used after swap-in to make sure
 // the keyboard focus reliably lands on the newly-visible claude pane.
 func FocusPane(paneID string) error {

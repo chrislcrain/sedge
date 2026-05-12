@@ -281,6 +281,9 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modePromptProject
 		return m, textinput.Blink
 	case actOpenCode:
+		if r, ok := m.currentRow(); ok && r.kind == rowProject {
+			return m, openShellAtCmd(r.project.Path)
+		}
 		return m, openCodePaneCmd()
 	case actCleanExit:
 		m.mode = modeConfirmCleanExit
@@ -1140,6 +1143,15 @@ func viewSubAgentCmd(wtPath, description string) tea.Cmd {
 			return errMsg{fmt.Errorf("no agent file found for %q yet (claude may not have flushed it)", description)}
 		}
 		if err := tmux.OpenSubAgentViewer(os.Getenv("TMUX_PANE"), path); err != nil {
+			return errMsg{err}
+		}
+		return clearStat{}
+	}
+}
+
+func openShellAtCmd(cwd string) tea.Cmd {
+	return func() tea.Msg {
+		if err := tmux.OpenShellPaneAt(os.Getenv("TMUX_PANE"), cwd); err != nil {
 			return errMsg{err}
 		}
 		return clearStat{}

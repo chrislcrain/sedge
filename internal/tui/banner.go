@@ -34,7 +34,7 @@ var helpEntries = [][2]string{
 	{"j/k", "navigate"},
 	{"⏎  ", "expand · swap · new"},
 	{"n  ", "add project"},
-	{"o  ", "open code pane"},
+	{"o  ", "shell @ project / worktree"},
 	{"D  ", "delete (recycle)"},
 	{"M  ", "merge → source"},
 	{"X  ", "kill all · quit"},
