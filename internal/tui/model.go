@@ -64,12 +64,21 @@ type mode int
 const (
 	modeList mode = iota
 	modePromptSession
-	modePromptBranch
+	modeSelectBranch
+	modePromptNewBranch
 	modePromptProject
 	modeConfirmDelete
 	modeConfirmCleanExit
 	modeConfirmMerge
 )
+
+// branchOption is one row in the modeSelectBranch picker.
+type branchOption struct {
+	display string // human-readable label rendered in the picker
+	branch  string // git branch name; "" for the "new branch" sentinel
+	newMode bool   // true if selecting this should open the new-branch name prompt
+	useDef  bool   // true if this is the "use default branch as base for sedge/<session>" option
+}
 
 type Model struct {
 	cfg       project.Config
@@ -84,8 +93,10 @@ type Model struct {
 	mode  mode
 	input textinput.Model
 
-	pendingProject     *project.Project  // for modePromptSession/modePromptBranch (which project gets the new session)
-	pendingSessionName string            // session name carried from modePromptSession into modePromptBranch
+	pendingProject     *project.Project  // for modePromptSession/modeSelectBranch (which project gets the new session)
+	pendingSessionName string            // session name carried from modePromptSession into modeSelectBranch
+	branchOptions      []branchOption    // populated when entering modeSelectBranch
+	branchCursor       int               // selection index into branchOptions
 	pendingWt          *project.Worktree // for modeConfirmDelete/modeConfirmMerge (which wt)
 	pendingWtP         *project.Project  // for modeConfirmDelete/modeConfirmMerge (its project)
 }
@@ -139,8 +150,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch m.mode {
-		case modePromptSession, modePromptBranch, modePromptProject:
+		case modePromptSession, modePromptNewBranch, modePromptProject:
 			return m.updatePromptInput(msg)
+		case modeSelectBranch:
+			return m.updateSelectBranch(msg)
 		case modeConfirmDelete:
 			return m.updateConfirmDelete(msg)
 		case modeConfirmCleanExit:
@@ -267,14 +280,14 @@ func (m Model) updatePromptInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		value := strings.TrimSpace(m.input.Value())
 		switch m.mode {
 		case modePromptSession:
-			// Move on to the branch prompt; carry session name forward.
+			// Move on to the branch picker; carry session name forward.
 			m.pendingSessionName = value
-			m.input.Reset()
-			m.input.Placeholder = "branch (empty=main+new sedge/, name=existing or new)"
-			m.input.Focus()
-			m.mode = modePromptBranch
-			return m, textinput.Blink
-		case modePromptBranch:
+			m.input.Blur()
+			m.branchOptions = buildBranchOptions(*m.pendingProject, value)
+			m.branchCursor = 0
+			m.mode = modeSelectBranch
+			return m, nil
+		case modePromptNewBranch:
 			p := m.pendingProject
 			session := m.pendingSessionName
 			m.mode = modeList
@@ -288,15 +301,8 @@ func (m Model) updatePromptInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, addProjectCmd(value)
 		}
 	case tea.KeyTab:
-		switch m.mode {
-		case modePromptProject:
+		if m.mode == modePromptProject {
 			if completed, ok := completePath(m.input.Value()); ok {
-				m.input.SetValue(completed)
-				m.input.SetCursor(len(completed))
-			}
-			return m, nil
-		case modePromptBranch:
-			if completed, ok := completeBranch(m.input.Value(), m.pendingProject); ok {
 				m.input.SetValue(completed)
 				m.input.SetCursor(len(completed))
 			}
@@ -306,6 +312,103 @@ func (m Model) updatePromptInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func (m Model) updateSelectBranch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeList
+		m.pendingProject = nil
+		m.pendingSessionName = ""
+		m.branchOptions = nil
+		return m, nil
+	case "j", "down":
+		if m.branchCursor < len(m.branchOptions)-1 {
+			m.branchCursor++
+		}
+		return m, nil
+	case "k", "up":
+		if m.branchCursor > 0 {
+			m.branchCursor--
+		}
+		return m, nil
+	case "enter":
+		if len(m.branchOptions) == 0 {
+			return m, nil
+		}
+		opt := m.branchOptions[m.branchCursor]
+		switch {
+		case opt.newMode:
+			// User wants to name a new branch — open the name prompt.
+			m.input.Reset()
+			m.input.Placeholder = "new branch name (off " + m.pendingProject.ResolvedDefaultBranch() + ")"
+			m.input.Focus()
+			m.mode = modePromptNewBranch
+			m.branchOptions = nil
+			return m, textinput.Blink
+		case opt.useDef:
+			// Default mode: empty branchInput → spec creates new sedge/<session> off default.
+			p := m.pendingProject
+			session := m.pendingSessionName
+			m.mode = modeList
+			m.pendingProject = nil
+			m.pendingSessionName = ""
+			m.branchOptions = nil
+			return m, spawnSessionCmd(*p, session, "", m.cfg)
+		default:
+			// Check out an existing local branch.
+			p := m.pendingProject
+			session := m.pendingSessionName
+			branch := opt.branch
+			m.mode = modeList
+			m.pendingProject = nil
+			m.pendingSessionName = ""
+			m.branchOptions = nil
+			return m, spawnSessionCmd(*p, session, branch, m.cfg)
+		}
+	}
+	return m, nil
+}
+
+// buildBranchOptions composes the list shown in modeSelectBranch.
+// Order: default-branch-as-base, each other local branch not currently
+// checked out (check out), new branch sentinel.
+func buildBranchOptions(p project.Project, sessionName string) []branchOption {
+	def := p.ResolvedDefaultBranch()
+	if def == "" {
+		def = project.DetectDefaultBranch(p.Path)
+	}
+	displayName := slugifySession(sessionName)
+	if displayName == "" {
+		displayName = "<auto>"
+	}
+	opts := []branchOption{
+		{
+			display: fmt.Sprintf("%s  (base for new sedge/%s)", def, displayName),
+			branch:  def,
+			useDef:  true,
+		},
+	}
+	branches, _ := project.ListLocalBranches(p.Path)
+	checkedOut, _ := project.CheckedOutBranches(p.Path)
+	for _, b := range branches {
+		if b == def {
+			continue
+		}
+		if checkedOut[b] {
+			// Already checked out elsewhere — git won't allow another worktree on it.
+			continue
+		}
+		opts = append(opts, branchOption{
+			display: fmt.Sprintf("%s  (check out)", b),
+			branch:  b,
+		})
+	}
+	opts = append(opts, branchOption{
+		display: fmt.Sprintf("+ new branch from %s …", def),
+		newMode: true,
+	})
+	return opts
 }
 
 func (m Model) updateConfirmMerge(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -382,12 +485,28 @@ func (m Model) View() string {
 		b.WriteString("\n")
 		b.WriteString(promptStyle.Render("Name for new session (Enter for auto):"))
 		b.WriteString("\n  " + m.input.View())
-	case modePromptBranch:
+	case modeSelectBranch:
 		b.WriteString("\n")
-		b.WriteString(promptStyle.Render("Branch:"))
+		b.WriteString(promptStyle.Render("Pick a branch:"))
+		b.WriteString("\n")
+		for i, opt := range m.branchOptions {
+			line := "  " + opt.display
+			if i == m.branchCursor {
+				w := m.w
+				if w <= 0 {
+					w = lipgloss.Width(line) + 4
+				}
+				b.WriteString(highlightRow(line, w))
+			} else {
+				b.WriteString(itemStyle.Render(line))
+			}
+			b.WriteString("\n")
+		}
+		b.WriteString(helpStyle.Render("j/k navigate · ⏎ select · esc cancel"))
+	case modePromptNewBranch:
+		b.WriteString("\n")
+		b.WriteString(promptStyle.Render("New branch name:"))
 		b.WriteString("\n  " + m.input.View())
-		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("⏎  empty=main+new sedge/   existing=check out   new name=create"))
 	case modePromptProject:
 		b.WriteString("\n")
 		b.WriteString(promptStyle.Render("Path to git repo:"))
@@ -671,28 +790,6 @@ func mergeWorktreeCmd(p project.Project, wt project.Worktree) tea.Cmd {
 		}
 		return statusMsg(fmt.Sprintf("merged %s into %s", meta.WorktreeBranch, meta.SourceBranch))
 	}
-}
-
-// completeBranch returns the longest common prefix of local branches matching
-// the typed prefix. Returns false if there are no candidates.
-func completeBranch(prefix string, p *project.Project) (string, bool) {
-	if p == nil {
-		return "", false
-	}
-	branches, err := project.ListLocalBranches(p.Path)
-	if err != nil {
-		return "", false
-	}
-	var matches []string
-	for _, b := range branches {
-		if strings.HasPrefix(b, prefix) {
-			matches = append(matches, b)
-		}
-	}
-	if len(matches) == 0 {
-		return "", false
-	}
-	return longestCommonPrefix(matches), true
 }
 
 type statusMsg string

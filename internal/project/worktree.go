@@ -107,6 +107,23 @@ func ListLocalBranches(repoPath string) ([]string, error) {
 	return branches, nil
 }
 
+// CheckedOutBranches returns the set of branches currently checked out in
+// some worktree of repo (including the main worktree). Useful for filtering
+// branches that can't be re-checked-out elsewhere.
+func CheckedOutBranches(repoPath string) (map[string]bool, error) {
+	out, err := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return nil, err
+	}
+	set := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "branch refs/heads/") {
+			set[strings.TrimPrefix(line, "branch refs/heads/")] = true
+		}
+	}
+	return set, nil
+}
+
 // HasLocalBranch reports whether the given branch exists locally in the repo.
 func HasLocalBranch(repoPath, branch string) bool {
 	if branch == "" {
