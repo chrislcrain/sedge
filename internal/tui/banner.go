@@ -36,6 +36,7 @@ var helpEntries = [][2]string{
 	{"n  ", "add project"},
 	{"o  ", "open code pane"},
 	{"D  ", "delete (recycle)"},
+	{"M  ", "merge → source"},
 	{"X  ", "kill all · quit"},
 	{"e  ", "edit config"},
 	{"r  ", "reload"},

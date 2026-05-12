@@ -64,9 +64,11 @@ type mode int
 const (
 	modeList mode = iota
 	modePromptSession
+	modePromptBranch
 	modePromptProject
 	modeConfirmDelete
 	modeConfirmCleanExit
+	modeConfirmMerge
 )
 
 type Model struct {
@@ -82,9 +84,10 @@ type Model struct {
 	mode  mode
 	input textinput.Model
 
-	pendingProject *project.Project  // for modePromptSession (which project gets the new session)
-	pendingWt      *project.Worktree // for modeConfirmDelete (which wt to delete)
-	pendingWtP     *project.Project  // for modeConfirmDelete (its project)
+	pendingProject     *project.Project  // for modePromptSession/modePromptBranch (which project gets the new session)
+	pendingSessionName string            // session name carried from modePromptSession into modePromptBranch
+	pendingWt          *project.Worktree // for modeConfirmDelete/modeConfirmMerge (which wt)
+	pendingWtP         *project.Project  // for modeConfirmDelete/modeConfirmMerge (its project)
 }
 
 func New() (Model, error) {
@@ -136,12 +139,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch m.mode {
-		case modePromptSession, modePromptProject:
+		case modePromptSession, modePromptBranch, modePromptProject:
 			return m.updatePromptInput(msg)
 		case modeConfirmDelete:
 			return m.updateConfirmDelete(msg)
 		case modeConfirmCleanExit:
 			return m.updateConfirmCleanExit(msg)
+		case modeConfirmMerge:
+			return m.updateConfirmMerge(msg)
 		}
 		// modeList
 		return m.updateList(msg)
@@ -179,6 +184,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		return m, nil
 
+	case statusMsg:
+		m.status = string(msg)
+		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), clearStatusAfter(4*time.Second))
+
 	case tickMsg:
 		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), tickCmd())
 	}
@@ -208,6 +217,13 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pendingWt = r.wt
 			m.pendingWtP = r.project
 			m.mode = modeConfirmDelete
+		}
+		return m, nil
+	case actMerge:
+		if r, ok := m.currentRow(); ok && r.kind == rowWorktree {
+			m.pendingWt = r.wt
+			m.pendingWtP = r.project
+			m.mode = modeConfirmMerge
 		}
 		return m, nil
 	case actAddProject:
@@ -245,24 +261,42 @@ func (m Model) updatePromptInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeList
 		m.input.Blur()
 		m.pendingProject = nil
+		m.pendingSessionName = ""
 		return m, nil
 	case tea.KeyEnter:
 		value := strings.TrimSpace(m.input.Value())
 		switch m.mode {
 		case modePromptSession:
+			// Move on to the branch prompt; carry session name forward.
+			m.pendingSessionName = value
+			m.input.Reset()
+			m.input.Placeholder = "branch (empty=main+new sedge/, name=existing or new)"
+			m.input.Focus()
+			m.mode = modePromptBranch
+			return m, textinput.Blink
+		case modePromptBranch:
 			p := m.pendingProject
+			session := m.pendingSessionName
 			m.mode = modeList
 			m.input.Blur()
 			m.pendingProject = nil
-			return m, spawnSessionCmd(*p, value, m.cfg)
+			m.pendingSessionName = ""
+			return m, spawnSessionCmd(*p, session, value, m.cfg)
 		case modePromptProject:
 			m.mode = modeList
 			m.input.Blur()
 			return m, addProjectCmd(value)
 		}
 	case tea.KeyTab:
-		if m.mode == modePromptProject {
+		switch m.mode {
+		case modePromptProject:
 			if completed, ok := completePath(m.input.Value()); ok {
+				m.input.SetValue(completed)
+				m.input.SetCursor(len(completed))
+			}
+			return m, nil
+		case modePromptBranch:
+			if completed, ok := completeBranch(m.input.Value(), m.pendingProject); ok {
 				m.input.SetValue(completed)
 				m.input.SetCursor(len(completed))
 			}
@@ -272,6 +306,23 @@ func (m Model) updatePromptInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func (m Model) updateConfirmMerge(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		p := m.pendingWtP
+		wt := m.pendingWt
+		m.mode = modeList
+		m.pendingWt = nil
+		m.pendingWtP = nil
+		return m, mergeWorktreeCmd(*p, *wt)
+	default:
+		m.mode = modeList
+		m.pendingWt = nil
+		m.pendingWtP = nil
+		return m, nil
+	}
 }
 
 func (m Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -331,6 +382,12 @@ func (m Model) View() string {
 		b.WriteString("\n")
 		b.WriteString(promptStyle.Render("Name for new session (Enter for auto):"))
 		b.WriteString("\n  " + m.input.View())
+	case modePromptBranch:
+		b.WriteString("\n")
+		b.WriteString(promptStyle.Render("Branch:"))
+		b.WriteString("\n  " + m.input.View())
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("⏎  empty=main+new sedge/   existing=check out   new name=create"))
 	case modePromptProject:
 		b.WriteString("\n")
 		b.WriteString(promptStyle.Render("Path to git repo:"))
@@ -339,6 +396,20 @@ func (m Model) View() string {
 		if m.pendingWt != nil {
 			b.WriteString("\n")
 			b.WriteString(promptStyle.Render(fmt.Sprintf("Delete worktree %q and recycle its history? (y/N)", m.pendingWt.SessionName)))
+		}
+	case modeConfirmMerge:
+		if m.pendingWt != nil {
+			meta, _ := project.ReadWorktreeMeta(m.pendingWt.Path)
+			src := meta.SourceBranch
+			wtBranch := meta.WorktreeBranch
+			if src == "" {
+				src = m.pendingWtP.ResolvedDefaultBranch()
+			}
+			if wtBranch == "" {
+				wtBranch = m.pendingWt.Branch
+			}
+			b.WriteString("\n")
+			b.WriteString(promptStyle.Render(fmt.Sprintf("Merge %s into %s? (y/N)", wtBranch, src)))
 		}
 	case modeConfirmCleanExit:
 		b.WriteString("\n")
@@ -535,7 +606,14 @@ func reloadCfgCmd() tea.Cmd {
 	}
 }
 
-func spawnSessionCmd(p project.Project, requestedName string, cfg project.Config) tea.Cmd {
+// spawnSessionCmd creates a worktree per the user's branch input, then swaps
+// claude into the slot.
+//
+// branchInput interpretation:
+//   - "" → base on default branch, create new "sedge/<session>" branch
+//   - existing local branch → check out that branch directly (no new branch)
+//   - any other name → create that name as a new branch off the default branch
+func spawnSessionCmd(p project.Project, requestedName, branchInput string, cfg project.Config) tea.Cmd {
 	return func() tea.Msg {
 		sessionName := slugifySession(requestedName)
 		if sessionName == "" {
@@ -545,13 +623,79 @@ func spawnSessionCmd(p project.Project, requestedName string, cfg project.Config
 		if defaultBranch == "" {
 			defaultBranch = project.DetectDefaultBranch(p.Path)
 		}
-		wt := project.WorktreePath(cfg.WorktreesRoot, p, sessionName)
-		if err := project.EnsureWorktree(p.Path, defaultBranch, wt, sessionName); err != nil {
+		wtPath := project.WorktreePath(cfg.WorktreesRoot, p, sessionName)
+
+		spec := project.WorktreeSpec{
+			RepoPath:    p.Path,
+			SessionName: sessionName,
+			WtPath:      wtPath,
+			BaseBranch:  defaultBranch,
+		}
+		branchInput = strings.TrimSpace(branchInput)
+		switch {
+		case branchInput == "":
+			// default: new sedge/<session> off main
+		case project.HasLocalBranch(p.Path, branchInput):
+			spec.CheckoutExisting = true
+			spec.BaseBranch = branchInput
+		default:
+			spec.NewBranchName = branchInput
+		}
+
+		if err := project.CreateWorktree(spec); err != nil {
 			return errMsg{err}
 		}
-		return spawnIntoSlot(p, project.Worktree{SessionName: sessionName, Path: wt, Branch: project.BranchName(sessionName)}, cfg)
+		wtBranch := spec.NewBranchName
+		if spec.CheckoutExisting {
+			wtBranch = spec.BaseBranch
+		} else if wtBranch == "" {
+			wtBranch = project.BranchName(sessionName)
+		}
+		return spawnIntoSlot(p, project.Worktree{SessionName: sessionName, Path: wtPath, Branch: wtBranch}, cfg)
 	}
 }
+
+func mergeWorktreeCmd(p project.Project, wt project.Worktree) tea.Cmd {
+	return func() tea.Msg {
+		meta, err := project.ReadWorktreeMeta(wt.Path)
+		if err != nil {
+			// Fall back to inferring source = project's default branch.
+			meta = project.WorktreeMeta{
+				SourceBranch:   p.ResolvedDefaultBranch(),
+				WorktreeBranch: wt.Branch,
+			}
+		}
+		out, err := project.MergeWorktreeBack(p.Path, meta)
+		if err != nil {
+			return errMsg{fmt.Errorf("%w\n%s", err, strings.TrimSpace(out))}
+		}
+		return statusMsg(fmt.Sprintf("merged %s into %s", meta.WorktreeBranch, meta.SourceBranch))
+	}
+}
+
+// completeBranch returns the longest common prefix of local branches matching
+// the typed prefix. Returns false if there are no candidates.
+func completeBranch(prefix string, p *project.Project) (string, bool) {
+	if p == nil {
+		return "", false
+	}
+	branches, err := project.ListLocalBranches(p.Path)
+	if err != nil {
+		return "", false
+	}
+	var matches []string
+	for _, b := range branches {
+		if strings.HasPrefix(b, prefix) {
+			matches = append(matches, b)
+		}
+	}
+	if len(matches) == 0 {
+		return "", false
+	}
+	return longestCommonPrefix(matches), true
+}
+
+type statusMsg string
 
 func swapToWorktreeCmd(p project.Project, wt project.Worktree, cfg project.Config) tea.Cmd {
 	return func() tea.Msg {

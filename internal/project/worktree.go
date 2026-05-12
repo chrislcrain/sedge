@@ -19,22 +19,101 @@ func BranchName(sessionName string) string {
 	return "sedge/" + sessionName
 }
 
+// WorktreeSpec captures the choices a user makes when creating a worktree.
+type WorktreeSpec struct {
+	RepoPath    string
+	SessionName string
+	WtPath      string
+
+	// BaseBranch is the branch to base off (default: project's default branch).
+	BaseBranch string
+
+	// CheckoutExisting, when true, makes the worktree check out BaseBranch
+	// directly rather than creating a new branch. Note that git will refuse
+	// if BaseBranch is already checked out in another worktree.
+	CheckoutExisting bool
+
+	// NewBranchName overrides the default new branch name (sedge/<session>).
+	// Only used when CheckoutExisting is false.
+	NewBranchName string
+}
+
 // EnsureWorktree creates a git worktree at wtPath branched from defaultBranch.
 // Idempotent: if the path already exists, returns nil.
 func EnsureWorktree(repoPath, defaultBranch, wtPath, sessionName string) error {
-	if _, err := exec.Command("git", "-C", repoPath, "rev-parse", "--is-inside-work-tree").Output(); err != nil {
-		return fmt.Errorf("%s is not a git repo: %w", repoPath, err)
+	return CreateWorktree(WorktreeSpec{
+		RepoPath:    repoPath,
+		SessionName: sessionName,
+		WtPath:      wtPath,
+		BaseBranch:  defaultBranch,
+	})
+}
+
+// CreateWorktree creates a git worktree according to spec and writes a
+// sidecar .sedge-meta.toml recording the source/worktree branches so a
+// later merge-back can find them.
+func CreateWorktree(spec WorktreeSpec) error {
+	if _, err := exec.Command("git", "-C", spec.RepoPath, "rev-parse", "--is-inside-work-tree").Output(); err != nil {
+		return fmt.Errorf("%s is not a git repo: %w", spec.RepoPath, err)
 	}
-	if listed, _ := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain").Output(); strings.Contains(string(listed), wtPath) {
+	if listed, _ := exec.Command("git", "-C", spec.RepoPath, "worktree", "list", "--porcelain").Output(); strings.Contains(string(listed), spec.WtPath) {
 		return nil
 	}
-	branch := BranchName(sessionName)
-	cmd := exec.Command("git", "-C", repoPath, "worktree", "add", "-b", branch, wtPath, defaultBranch)
-	out, err := cmd.CombinedOutput()
+	base := spec.BaseBranch
+	if base == "" {
+		base = "main"
+	}
+
+	var wtBranch string
+	var args []string
+	if spec.CheckoutExisting {
+		wtBranch = base
+		args = []string{"-C", spec.RepoPath, "worktree", "add", spec.WtPath, base}
+	} else {
+		wtBranch = spec.NewBranchName
+		if wtBranch == "" {
+			wtBranch = BranchName(spec.SessionName)
+		}
+		args = []string{"-C", spec.RepoPath, "worktree", "add", "-b", wtBranch, spec.WtPath, base}
+	}
+	out, err := exec.Command("git", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
 	}
+	if err := WriteWorktreeMeta(spec.WtPath, WorktreeMeta{
+		SourceBranch:   base,
+		WorktreeBranch: wtBranch,
+	}); err != nil {
+		// Non-fatal — the worktree is created; just no merge-back metadata.
+		return nil
+	}
 	return nil
+}
+
+// ListLocalBranches returns the local branch names for a repo (excluding
+// remote-tracking branches).
+func ListLocalBranches(repoPath string) ([]string, error) {
+	out, err := exec.Command("git", "-C", repoPath, "for-each-ref", "--format=%(refname:short)", "refs/heads/").Output()
+	if err != nil {
+		return nil, err
+	}
+	var branches []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return branches, nil
+}
+
+// HasLocalBranch reports whether the given branch exists locally in the repo.
+func HasLocalBranch(repoPath, branch string) bool {
+	if branch == "" {
+		return false
+	}
+	err := exec.Command("git", "-C", repoPath, "rev-parse", "--verify", "refs/heads/"+branch).Run()
+	return err == nil
 }
 
 // WtState describes the runtime state of a worktree's claude session.
