@@ -58,6 +58,14 @@ func GlobalAgentsLocalFile() (string, error) {
 	return filepath.Join(r, "AGENTS.local.md"), nil
 }
 
+func NameplateFile() (string, error) {
+	r, err := Root()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(r, "nameplate.txt"), nil
+}
+
 func WorktreesRoot() (string, error) {
 	r, err := Root()
 	if err != nil {

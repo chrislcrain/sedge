@@ -251,6 +251,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case actEdit:
 		return m, editConfigCmd()
 	case actReload:
+		reloadNameplate()
 		return m, tea.Batch(reloadCfgCmd(), loadAllWorktreesCmd(m.cfg))
 	case actDelete:
 		if r, ok := m.currentRow(); ok {
@@ -995,7 +996,7 @@ func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) t
 		return errMsg{err}
 	}
 	if paneID != "" {
-		if err := tmux.SwapInPane(sedgePane, paneID, cfg.SedgeWidthCols, cfg.SlotWidthPercent); err != nil {
+		if err := tmux.SwapInPane(sedgePane, paneID, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
 			return errMsg{err}
 		}
 		return focusedMsg{pane: wt.SessionName}
@@ -1023,10 +1024,25 @@ func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) t
 	if err != nil {
 		return errMsg{err}
 	}
-	if err := tmux.SwapInPane(sedgePane, newPane, cfg.SedgeWidthCols, cfg.SlotWidthPercent); err != nil {
+	if err := tmux.SwapInPane(sedgePane, newPane, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
 		return errMsg{err}
 	}
 	return spawnedMsg{pane: wt.SessionName, paneID: newPane}
+}
+
+// nameplateMargin is the spare columns left around the widest nameplate row
+// so the project tree has some breathing room next to the banner.
+const nameplateMargin = 4
+
+// sedgePaneCols returns the effective width (in columns) the sedge pane
+// should occupy: at least wide enough for the configured nameplate plus a
+// small margin, but never narrower than the user-configured value.
+func sedgePaneCols(cfg project.Config) int {
+	n := NameplateWidth() + nameplateMargin
+	if cfg.SedgeWidthCols > n {
+		return cfg.SedgeWidthCols
+	}
+	return n
 }
 
 func deleteWorktreeCmd(p project.Project, wt project.Worktree) tea.Cmd {
