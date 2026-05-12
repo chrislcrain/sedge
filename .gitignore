@@ -1,4 +1,37 @@
+# compiled binary at repo root (e.g. from `go build`)
 /sedge
+
+# build artifacts
 /dist/
+/build/
+/bin/
+
+# Go test/cover output
 *.test
 *.out
+*.cov
+coverage.txt
+profile.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# sedge-specific: per-clone agent overrides are personal
+AGENTS.local.md
+.sedge.local.md
+
+# direnv
+.envrc
+.direnv/
