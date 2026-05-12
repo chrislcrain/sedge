@@ -113,7 +113,7 @@ the sub-agent's `tool_result` arrives (3 s polling).
 | `n`                   | add a new project (path prompt with `Tab` autocomplete)                                                                                                |
 | `o`                   | open a shell pane to the right of the claude pane in the worktree's cwd                                                                                |
 | `D`                   | delete the worktree under the cursor (confirms `y/N`, recycles to `~/.sedge/recycle/`)                                                                 |
-| `M`                   | merge the worktree's branch back into its source (confirms `y/N`)                                                                                      |
+| `P`                   | push the worktree's branch to `origin` and open (or update) a PR against its source branch (confirms `y/N`)                                            |
 | `e`                   | open `~/.sedge/config.toml` in `$EDITOR`                                                                                                               |
 | `r`                   | reload everything                                                                                                                                      |
 | `q`                   | quit sedge — background sessions keep running                                                                                                          |
@@ -134,21 +134,41 @@ Pressing `Enter` on `+ new session` opens two prompts in sequence:
    - **any other name** → create that as a new branch off the default branch
 
 A sidecar `.sedge-meta.toml` is written into each worktree recording its
-source branch, so a later `M` can merge it back without re-prompting.
+source branch, so a later `P` can push and open a PR without re-prompting.
 
-## Merging back
+## Push + open PR (`P`)
 
-Cursor on a worktree, `M`, confirm `y` → sedge runs:
+Cursor on a worktree, `P`, confirm `y` → sedge runs `git push -u origin
+<worktree-branch>` from inside the worktree, then opens (or updates) a PR
+against `<source-branch>`. The confirm prompt is a dry-run preview:
 
-```sh
-git -C <project>            \
-  checkout <source-branch>  \
-  && git merge --no-ff <worktree-branch>
+```
+Push sedge/feat-foo → PR against main?
+  3 commits to push · PR exists — will update https://github.com/.../pull/42
+Proceed? (y/N)
 ```
 
-If the main repo currently has a different branch checked out, sedge will
-attempt to switch first. If the merge fails (conflicts, dirty tree, etc.) the
-verbatim git output surfaces in the status line.
+Three notable behaviours:
+
+- **No direct pushes to the source branch.** If the worktree happens to be
+  checked out on its source branch (`worktree_branch == source_branch`, e.g.
+  you picked "check out existing" on `main`), sedge first carves the commits
+  onto a fresh `sedge/<session>` branch (resetting local `main` back to
+  `origin/main` when safe), updates `.sedge-meta.toml`, then pushes that
+  new branch. The preview surfaces this as "*worktree is on main — will
+  carve commits onto sedge/foo first*".
+- **Existing PR detection.** Before creating a PR, sedge runs
+  `gh pr list --head <branch> --base <source>`. If an open PR already
+  exists, it skips `gh pr create` and reports the existing URL — pushing
+  alone is enough because PRs track a branch ref.
+- **`gh`-optional.** The push itself is plain `git push`, so it uses
+  whatever auth your `origin` remote is configured for (SSH key, HTTPS
+  token, etc.). `gh` is only consulted for PR list/create. If `gh` is
+  missing, unauthenticated, or otherwise fails, sedge falls back to the
+  *"Create a pull request for X by visiting: …"* URL that GitHub itself
+  prints on first push, or synthesises a `compare/<source>...<head>?expand=1`
+  URL from the origin remote on subsequent pushes. End result: SSH-only
+  setups work end-to-end; you click the link to open the PR manually.
 
 ## Delete + recycle
 
@@ -193,8 +213,9 @@ default_model           = ""               # empty = let claude pick
 worktrees_root          = "~/.sedge/worktrees"
 
 # layout
-sedge_width_cols        = 34               # absolute width of the sedge pane;
-                                           # claude takes window_width - this
+sedge_width_cols        = 34               # minimum width of the sedge pane;
+                                           # auto-grows to fit a wider nameplate
+                                           # (nameplate width + 4 cols margin)
 slot_width_percent      = 80               # legacy fallback, only used if
                                            # sedge_width_cols is unset
 
@@ -211,6 +232,15 @@ default_branch = "main"
 
 `sedge add <path>` and `sedge rm <name>` edit this file for you, but you
 can also edit it by hand (`sedge edit` opens it in `$EDITOR`).
+
+### Nameplate (`~/.sedge/nameplate.txt`)
+
+The ASCII banner at the top of the sedge pane is read from
+`~/.sedge/nameplate.txt`. `sedge init` seeds it with the default `sedge`
+figlet. Edit it to anything you like — any plain-text content works (ANSI
+escapes included). The sedge pane auto-resizes to fit the widest row
+(plus a 4-column margin) on next launch. Hit `r` inside sedge to reload
+the nameplate without restarting.
 
 ## Agent instruction hierarchy
 
