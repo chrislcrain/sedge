@@ -92,6 +92,9 @@ func ensureInit() error {
 	if err := instructions.WriteDefaultAgentsIfMissing(); err != nil {
 		return err
 	}
+	if err := tui.WriteDefaultNameplateIfMissing(); err != nil {
+		return err
+	}
 	cfgPath, err := xdg.ConfigFile()
 	if err != nil {
 		return err

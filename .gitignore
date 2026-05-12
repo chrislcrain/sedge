@@ -32,6 +32,9 @@ Thumbs.db
 AGENTS.local.md
 .sedge.local.md
 
+# sedge writes per-worktree metadata into each worktree; never commit it
+.sedge-meta.toml
+
 # direnv
 .envrc
 .direnv/

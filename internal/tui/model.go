@@ -251,6 +251,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case actEdit:
 		return m, editConfigCmd()
 	case actReload:
+		reloadNameplate()
 		return m, tea.Batch(reloadCfgCmd(), loadAllWorktreesCmd(m.cfg))
 	case actDelete:
 		if r, ok := m.currentRow(); ok {
@@ -647,8 +648,20 @@ func (m Model) renderModePrompt() string {
 	case modeConfirmShip:
 		if m.pendingWt != nil {
 			meta := resolveMeta(*m.pendingWtP, *m.pendingWt)
+			headBranch := meta.WorktreeBranch
+			updateExisting := false
+			if m.pendingShipPrev != nil {
+				if m.pendingShipPrev.RebranchTo != "" {
+					headBranch = m.pendingShipPrev.RebranchTo
+				}
+				updateExisting = m.pendingShipPrev.ExistingPRURL != ""
+			}
 			b.WriteString("\n")
-			b.WriteString(promptStyle.Render(fmt.Sprintf("Push %s → PR against %s?", meta.WorktreeBranch, meta.SourceBranch)))
+			action := "PR against"
+			if updateExisting {
+				action = "update existing PR against"
+			}
+			b.WriteString(promptStyle.Render(fmt.Sprintf("Push %s → %s %s?", headBranch, action, meta.SourceBranch)))
 			b.WriteString("\n")
 			if m.pendingShipPrev == nil {
 				b.WriteString(helpStyle.Render("  (checking…)"))
@@ -668,7 +681,12 @@ func (m Model) renderModePrompt() string {
 					} else {
 						bits = append(bits, fmt.Sprintf("%d commits to push", p.CommitsAhead))
 					}
-					if p.BranchExists {
+					if p.RebranchTo != "" {
+						bits = append(bits, fmt.Sprintf("worktree is on %s — will carve commits onto %s first", p.SourceBranch, p.RebranchTo))
+					}
+					if p.ExistingPRURL != "" {
+						bits = append(bits, "PR exists — will update "+p.ExistingPRURL)
+					} else if p.BranchExists && p.RebranchTo == "" {
 						bits = append(bits, "branch already on origin (will fast-forward)")
 					}
 					b.WriteString(helpStyle.Render("  " + strings.Join(bits, " · ")))
@@ -936,7 +954,7 @@ type shipPreviewMsg project.ShipPreview
 func previewShipCmd(p project.Project, wt project.Worktree) tea.Cmd {
 	return func() tea.Msg {
 		meta := resolveMeta(p, wt)
-		return shipPreviewMsg(project.PreviewShip(p.Path, meta))
+		return shipPreviewMsg(project.PreviewShip(p.Path, wt.Path, meta))
 	}
 }
 
@@ -989,7 +1007,7 @@ func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) t
 		return errMsg{err}
 	}
 	if paneID != "" {
-		if err := tmux.SwapInPane(sedgePane, paneID, cfg.SedgeWidthCols, cfg.SlotWidthPercent); err != nil {
+		if err := tmux.SwapInPane(sedgePane, paneID, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
 			return errMsg{err}
 		}
 		return focusedMsg{pane: wt.SessionName}
@@ -1017,10 +1035,25 @@ func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) t
 	if err != nil {
 		return errMsg{err}
 	}
-	if err := tmux.SwapInPane(sedgePane, newPane, cfg.SedgeWidthCols, cfg.SlotWidthPercent); err != nil {
+	if err := tmux.SwapInPane(sedgePane, newPane, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
 		return errMsg{err}
 	}
 	return spawnedMsg{pane: wt.SessionName, paneID: newPane}
+}
+
+// nameplateMargin is the spare columns left around the widest nameplate row
+// so the project tree has some breathing room next to the banner.
+const nameplateMargin = 4
+
+// sedgePaneCols returns the effective width (in columns) the sedge pane
+// should occupy: at least wide enough for the configured nameplate plus a
+// small margin, but never narrower than the user-configured value.
+func sedgePaneCols(cfg project.Config) int {
+	n := NameplateWidth() + nameplateMargin
+	if cfg.SedgeWidthCols > n {
+		return cfg.SedgeWidthCols
+	}
+	return n
 }
 
 func deleteWorktreeCmd(p project.Project, wt project.Worktree) tea.Cmd {

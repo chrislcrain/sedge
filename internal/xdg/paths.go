@@ -14,6 +14,26 @@ func Root() (string, error) {
 	return filepath.Join(home, ".sedge"), nil
 }
 
+// ClaudeProjectsDir returns the directory Claude Code uses for per-project
+// session storage. It mirrors Claude Code's own resolution:
+//
+//   - $CLAUDE_CONFIG_DIR/projects when CLAUDE_CONFIG_DIR is set
+//   - ~/.claude/projects otherwise
+//
+// Returns "" if neither can be resolved (no HOME, no env var). Sedge needs
+// this to find a worktree's session JSONL files (for sub-agent tracking,
+// --continue detection, and recycle).
+func ClaudeProjectsDir() string {
+	if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); cfg != "" {
+		return filepath.Join(cfg, "projects")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "projects")
+}
+
 func ConfigFile() (string, error) {
 	r, err := Root()
 	if err != nil {
@@ -36,6 +56,14 @@ func GlobalAgentsLocalFile() (string, error) {
 		return "", err
 	}
 	return filepath.Join(r, "AGENTS.local.md"), nil
+}
+
+func NameplateFile() (string, error) {
+	r, err := Root()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(r, "nameplate.txt"), nil
 }
 
 func WorktreesRoot() (string, error) {
