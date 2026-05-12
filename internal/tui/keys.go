@@ -15,7 +15,7 @@ const (
 	actAddProject // n — new project prompt
 	actOpenCode   // o — spawn shell pane to the right of the claude slot pane
 	actCleanExit  // capital X — kill all sedge windows and quit
-	actMerge      // capital M — merge worktree back into source branch
+	actShip       // capital P — push worktree branch + open PR via gh
 	actQuit
 )
 
@@ -39,8 +39,8 @@ func keyFor(msg tea.KeyMsg) keyAction {
 		return actOpenCode
 	case "X":
 		return actCleanExit
-	case "M":
-		return actMerge
+	case "P":
+		return actShip
 	case "q", "ctrl+c":
 		// esc deliberately omitted: it's used to cancel prompts and we
 		// don't want it to terminate sedge if the user pressed it while

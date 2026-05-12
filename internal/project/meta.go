@@ -50,26 +50,21 @@ func ReadWorktreeMeta(wtPath string) (WorktreeMeta, error) {
 	return m, nil
 }
 
-// MergePreview is the dry-run result of a merge — what would happen if the
-// user confirmed M. Used to show conflicts before sedge mutates the project
-// repo.
-type MergePreview struct {
-	SourceBranch   string   // resolved source branch (from sidecar or fallback)
-	WorktreeBranch string   // resolved worktree branch
-	CurrentBranch  string   // project dir's current branch (empty if detached)
-	NeedsCheckout  bool     // project dir isn't on source — sedge will switch first
-	AlreadyMerged  bool     // worktree branch is an ancestor of source — no-op
-	Clean          bool     // merge would be conflict-free
-	Conflicts      []string // file paths that would conflict (only when Clean=false)
-	Err            error    // non-nil if the dry-run itself failed
+// ShipPreview is the dry-run result of P — what would happen on push +
+// `gh pr create` without actually doing either.
+type ShipPreview struct {
+	SourceBranch   string // branch the PR will target
+	WorktreeBranch string // branch being pushed
+	CommitsAhead   int    // commits in worktreeBranch not in sourceBranch
+	HasRemote      bool   // origin exists in repo
+	BranchExists   bool   // worktreeBranch already on origin (push will be a fast-forward update)
+	Err            error
 }
 
-// PreviewMerge runs `git merge-tree` against repoPath to predict whether
-// merging worktreeBranch into sourceBranch would conflict, plus reads the
-// project dir's current branch so we can warn the user if a checkout is
-// needed first. Does not mutate anything.
-func PreviewMerge(repoPath string, m WorktreeMeta) MergePreview {
-	prev := MergePreview{
+// PreviewShip looks up commit count and remote state without mutating
+// anything. Used to populate the P confirm prompt.
+func PreviewShip(repoPath string, m WorktreeMeta) ShipPreview {
+	prev := ShipPreview{
 		SourceBranch:   m.SourceBranch,
 		WorktreeBranch: m.WorktreeBranch,
 	}
@@ -77,78 +72,49 @@ func PreviewMerge(repoPath string, m WorktreeMeta) MergePreview {
 		prev.Err = errors.New("worktree metadata missing branches")
 		return prev
 	}
-
-	// Project dir's current branch.
-	if out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output(); err == nil {
-		prev.CurrentBranch = strings.TrimSpace(string(out))
-		prev.NeedsCheckout = prev.CurrentBranch != "" && prev.CurrentBranch != m.SourceBranch
+	// Commits ahead.
+	if out, err := exec.Command("git", "-C", repoPath, "rev-list", "--count",
+		m.SourceBranch+".."+m.WorktreeBranch).Output(); err == nil {
+		_, _ = fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &prev.CommitsAhead)
 	}
-
-	// Already-merged check.
-	if err := exec.Command("git", "-C", repoPath, "merge-base", "--is-ancestor",
-		m.WorktreeBranch, m.SourceBranch).Run(); err == nil {
-		prev.AlreadyMerged = true
-		prev.Clean = true
-		return prev
+	// origin remote present?
+	if err := exec.Command("git", "-C", repoPath, "remote", "get-url", "origin").Run(); err == nil {
+		prev.HasRemote = true
 	}
-
-	// Conflict preview via git merge-tree (git >= 2.38).
-	out, err := exec.Command("git", "-C", repoPath, "merge-tree", "--write-tree", "--name-only",
-		m.SourceBranch, m.WorktreeBranch).Output()
-	if err == nil {
-		// Exit 0 = clean merge.
-		prev.Clean = true
-		return prev
+	// Branch already on origin?
+	if err := exec.Command("git", "-C", repoPath, "rev-parse", "--verify",
+		"refs/remotes/origin/"+m.WorktreeBranch).Run(); err == nil {
+		prev.BranchExists = true
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-		// Exit 1 = conflicts. stdout: tree SHA, blank line, conflicted file list.
-		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-		// First line is the tree SHA. Skip blank lines.
-		var conflicts []string
-		for i, l := range lines {
-			l = strings.TrimSpace(l)
-			if i == 0 || l == "" {
-				continue
-			}
-			conflicts = append(conflicts, l)
-		}
-		prev.Conflicts = conflicts
-		return prev
-	}
-	prev.Err = fmt.Errorf("merge-tree dry run: %w", err)
 	return prev
 }
 
-// MergeWorktreeBack runs `git merge --no-ff <worktreeBranch>` against
-// sourceBranch in the main repo (repoPath). If sourceBranch isn't currently
-// checked out, sedge will attempt to switch the main repo to it first.
-// Returns the combined git output and any error.
-func MergeWorktreeBack(repoPath string, m WorktreeMeta) (string, error) {
+// ShipWorktree pushes worktreeBranch to origin and opens a PR via the gh CLI
+// targeting sourceBranch. Returns the PR URL gh prints on success, or the
+// combined output on failure. Requires `gh auth login` to have been run.
+func ShipWorktree(repoPath, wtPath string, m WorktreeMeta) (string, error) {
 	if m.WorktreeBranch == "" || m.SourceBranch == "" {
 		return "", errors.New("worktree metadata missing branches")
 	}
-	if m.WorktreeBranch == m.SourceBranch {
-		return "", errors.New("worktree branch equals source branch; nothing to merge")
+	// Push from the worktree (its checked-out branch == m.WorktreeBranch).
+	pushDir := wtPath
+	if pushDir == "" {
+		pushDir = repoPath
 	}
-
-	out, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output()
+	pushOut, err := exec.Command("git", "-C", pushDir, "push", "-u", "origin", m.WorktreeBranch).CombinedOutput()
 	if err != nil {
-		return string(out), fmt.Errorf("read current branch: %w", err)
+		return strings.TrimSpace(string(pushOut)), fmt.Errorf("git push: %w", err)
 	}
-	current := strings.TrimSpace(string(out))
-	var transcript strings.Builder
-	if current != m.SourceBranch {
-		coOut, coErr := exec.Command("git", "-C", repoPath, "checkout", m.SourceBranch).CombinedOutput()
-		transcript.WriteString(string(coOut))
-		if coErr != nil {
-			return transcript.String(), fmt.Errorf("checkout %s: %w", m.SourceBranch, coErr)
-		}
+	// Create the PR. --fill auto-derives title/body from the branch's commits.
+	cmd := exec.Command("gh", "pr", "create",
+		"--base", m.SourceBranch,
+		"--head", m.WorktreeBranch,
+		"--fill")
+	cmd.Dir = pushDir
+	prOut, err := cmd.CombinedOutput()
+	if err != nil {
+		return strings.TrimSpace(string(prOut)), fmt.Errorf("gh pr create: %w", err)
 	}
-	mergeOut, mergeErr := exec.Command("git", "-C", repoPath, "merge", "--no-ff", m.WorktreeBranch).CombinedOutput()
-	transcript.WriteString(string(mergeOut))
-	if mergeErr != nil {
-		return transcript.String(), fmt.Errorf("merge %s into %s: %w", m.WorktreeBranch, m.SourceBranch, mergeErr)
-	}
-	return transcript.String(), nil
+	return strings.TrimSpace(string(prOut)), nil
 }
+

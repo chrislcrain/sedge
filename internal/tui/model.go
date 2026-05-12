@@ -71,7 +71,7 @@ const (
 	modeConfirmDelete
 	modeConfirmDeleteProject
 	modeConfirmCleanExit
-	modeConfirmMerge
+	modeConfirmShip
 )
 
 // branchOption is one row in the modeSelectBranch picker.
@@ -100,9 +100,9 @@ type Model struct {
 	pendingBranchInput string            // branch (or empty for default mode) carried through the create flow
 	branchOptions      []branchOption    // populated when entering modeSelectBranch
 	branchCursor       int               // selection index into branchOptions
-	pendingWt          *project.Worktree // for modeConfirmDelete/modeConfirmMerge (which wt)
-	pendingWtP         *project.Project  // for modeConfirmDelete/modeConfirmMerge (its project)
-	pendingMergePrev   *project.MergePreview // dry-run result shown in modeConfirmMerge
+	pendingWt        *project.Worktree    // for modeConfirmDelete/modeConfirmShip (which wt)
+	pendingWtP       *project.Project     // for modeConfirmDelete/modeConfirmShip (its project)
+	pendingShipPrev  *project.ShipPreview // dry-run result shown in modeConfirmShip
 }
 
 func New() (Model, error) {
@@ -170,8 +170,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirmDeleteProject(msg)
 		case modeConfirmCleanExit:
 			return m.updateConfirmCleanExit(msg)
-		case modeConfirmMerge:
-			return m.updateConfirmMerge(msg)
+		case modeConfirmShip:
+			return m.updateConfirmShip(msg)
 		}
 		// modeList
 		return m.updateList(msg)
@@ -221,10 +221,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = string(msg)
 		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), clearStatusAfter(4*time.Second))
 
-	case mergePreviewMsg:
-		if m.mode == modeConfirmMerge {
-			p := project.MergePreview(msg)
-			m.pendingMergePrev = &p
+	case shipPreviewMsg:
+		if m.mode == modeConfirmShip {
+			p := project.ShipPreview(msg)
+			m.pendingShipPrev = &p
 		}
 		return m, nil
 
@@ -265,13 +265,13 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
-	case actMerge:
+	case actShip:
 		if r, ok := m.currentRow(); ok && r.kind == rowWorktree {
 			m.pendingWt = r.wt
 			m.pendingWtP = r.project
-			m.pendingMergePrev = nil
-			m.mode = modeConfirmMerge
-			return m, previewMergeCmd(*r.project, *r.wt)
+			m.pendingShipPrev = nil
+			m.mode = modeConfirmShip
+			return m, previewShipCmd(*r.project, *r.wt)
 		}
 		return m, nil
 	case actAddProject:
@@ -486,7 +486,7 @@ func buildBranchOptions(p project.Project, sessionName string) []branchOption {
 	return opts
 }
 
-func (m Model) updateConfirmMerge(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateConfirmShip(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
 		p := m.pendingWtP
@@ -494,13 +494,13 @@ func (m Model) updateConfirmMerge(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeList
 		m.pendingWt = nil
 		m.pendingWtP = nil
-		m.pendingMergePrev = nil
-		return m, mergeWorktreeCmd(*p, *wt)
+		m.pendingShipPrev = nil
+		return m, shipWorktreeCmd(*p, *wt)
 	default:
 		m.mode = modeList
 		m.pendingWt = nil
 		m.pendingWtP = nil
-		m.pendingMergePrev = nil
+		m.pendingShipPrev = nil
 		return m, nil
 	}
 }
@@ -644,46 +644,34 @@ func (m Model) renderModePrompt() string {
 			b.WriteString("\n")
 			b.WriteString(promptStyle.Render(fmt.Sprintf("Unregister project %q? (%s; the on-disk repo stays put) (y/N)", m.pendingWtP.Name, detail)))
 		}
-	case modeConfirmMerge:
+	case modeConfirmShip:
 		if m.pendingWt != nil {
-			meta, _ := project.ReadWorktreeMeta(m.pendingWt.Path)
-			src := meta.SourceBranch
-			wtBranch := meta.WorktreeBranch
-			if src == "" {
-				src = m.pendingWtP.ResolvedDefaultBranch()
-			}
-			if wtBranch == "" {
-				wtBranch = m.pendingWt.Branch
-			}
+			meta := resolveMeta(*m.pendingWtP, *m.pendingWt)
 			b.WriteString("\n")
-			b.WriteString(promptStyle.Render(fmt.Sprintf("Merge %s → %s?", wtBranch, src)))
+			b.WriteString(promptStyle.Render(fmt.Sprintf("Push %s → PR against %s?", meta.WorktreeBranch, meta.SourceBranch)))
 			b.WriteString("\n")
-			if m.pendingMergePrev == nil {
+			if m.pendingShipPrev == nil {
 				b.WriteString(helpStyle.Render("  (checking…)"))
 			} else {
-				p := m.pendingMergePrev
+				p := m.pendingShipPrev
 				switch {
 				case p.Err != nil:
 					b.WriteString(errStyle.Render("  preview failed: " + p.Err.Error()))
-				case p.AlreadyMerged:
-					b.WriteString(helpStyle.Render("  already merged — nothing to do"))
-				case p.Clean:
-					b.WriteString(helpStyle.Render("  clean merge"))
+				case !p.HasRemote:
+					b.WriteString(errStyle.Render("  no 'origin' remote — add one first"))
 				default:
-					files := p.Conflicts
-					more := 0
-					if len(files) > 4 {
-						more = len(files) - 4
-						files = files[:4]
+					var bits []string
+					if p.CommitsAhead == 0 {
+						bits = append(bits, "no new commits to push")
+					} else if p.CommitsAhead == 1 {
+						bits = append(bits, "1 commit to push")
+					} else {
+						bits = append(bits, fmt.Sprintf("%d commits to push", p.CommitsAhead))
 					}
-					b.WriteString(errStyle.Render(fmt.Sprintf("  CONFLICTS (%d): %s", len(p.Conflicts)+more, strings.Join(files, ", "))))
-					if more > 0 {
-						b.WriteString(errStyle.Render(fmt.Sprintf(" +%d more", more)))
+					if p.BranchExists {
+						bits = append(bits, "branch already on origin (will fast-forward)")
 					}
-				}
-				if p.NeedsCheckout && p.CurrentBranch != "" {
-					b.WriteString("\n")
-					b.WriteString(helpStyle.Render(fmt.Sprintf("  project dir on '%s' — sedge will switch to '%s' first", p.CurrentBranch, src)))
+					b.WriteString(helpStyle.Render("  " + strings.Join(bits, " · ")))
 				}
 			}
 			b.WriteString("\n")
@@ -943,37 +931,35 @@ func spawnSessionCmd(p project.Project, requestedName, branchInput, wtPathInput 
 	}
 }
 
-type mergePreviewMsg project.MergePreview
+type shipPreviewMsg project.ShipPreview
 
-func previewMergeCmd(p project.Project, wt project.Worktree) tea.Cmd {
+func previewShipCmd(p project.Project, wt project.Worktree) tea.Cmd {
 	return func() tea.Msg {
-		meta, err := project.ReadWorktreeMeta(wt.Path)
-		if err != nil {
-			meta = project.WorktreeMeta{
-				SourceBranch:   p.ResolvedDefaultBranch(),
-				WorktreeBranch: wt.Branch,
-			}
-		}
-		return mergePreviewMsg(project.PreviewMerge(p.Path, meta))
+		meta := resolveMeta(p, wt)
+		return shipPreviewMsg(project.PreviewShip(p.Path, meta))
 	}
 }
 
-func mergeWorktreeCmd(p project.Project, wt project.Worktree) tea.Cmd {
+func shipWorktreeCmd(p project.Project, wt project.Worktree) tea.Cmd {
 	return func() tea.Msg {
-		meta, err := project.ReadWorktreeMeta(wt.Path)
+		meta := resolveMeta(p, wt)
+		out, err := project.ShipWorktree(p.Path, wt.Path, meta)
 		if err != nil {
-			// Fall back to inferring source = project's default branch.
-			meta = project.WorktreeMeta{
-				SourceBranch:   p.ResolvedDefaultBranch(),
-				WorktreeBranch: wt.Branch,
-			}
+			return errMsg{fmt.Errorf("%w\n%s", err, out)}
 		}
-		out, err := project.MergeWorktreeBack(p.Path, meta)
-		if err != nil {
-			return errMsg{fmt.Errorf("%w\n%s", err, strings.TrimSpace(out))}
-		}
-		return statusMsg(fmt.Sprintf("merged %s into %s", meta.WorktreeBranch, meta.SourceBranch))
+		return statusMsg(out) // gh prints the PR URL on success
 	}
+}
+
+func resolveMeta(p project.Project, wt project.Worktree) project.WorktreeMeta {
+	meta, err := project.ReadWorktreeMeta(wt.Path)
+	if err != nil || meta.SourceBranch == "" || meta.WorktreeBranch == "" {
+		meta = project.WorktreeMeta{
+			SourceBranch:   p.ResolvedDefaultBranch(),
+			WorktreeBranch: wt.Branch,
+		}
+	}
+	return meta
 }
 
 type statusMsg string

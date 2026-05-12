@@ -36,7 +36,7 @@ var helpEntries = [][2]string{
 	{"n  ", "add project"},
 	{"o  ", "shell @ project / worktree"},
 	{"D  ", "delete (recycle)"},
-	{"M  ", "merge → source"},
+	{"P  ", "push + open PR"},
 	{"X  ", "kill all · quit"},
 	{"e  ", "edit config"},
 	{"r  ", "reload"},
