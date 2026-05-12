@@ -11,6 +11,28 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// pickShipBranchName returns a "sedge/<session>" branch name that does not
+// already exist locally or on origin. Falls back to appending -1, -2, … on
+// collision. Returns "" if no unused name was found within a reasonable bound.
+func pickShipBranchName(repoPath, session string) string {
+	base := BranchName(session)
+	for i := 0; i < 100; i++ {
+		candidate := base
+		if i > 0 {
+			candidate = fmt.Sprintf("%s-%d", base, i)
+		}
+		if HasLocalBranch(repoPath, candidate) {
+			continue
+		}
+		if exec.Command("git", "-C", repoPath, "rev-parse", "--verify",
+			"refs/remotes/origin/"+candidate).Run() == nil {
+			continue
+		}
+		return candidate
+	}
+	return ""
+}
+
 // WorktreeMeta is sidecar metadata sedge writes alongside each worktree at
 // <wtPath>/.sedge-meta.toml. Recording the source branch lets us offer
 // "merge back to source" later.
@@ -58,12 +80,13 @@ type ShipPreview struct {
 	CommitsAhead   int    // commits in worktreeBranch not in sourceBranch
 	HasRemote      bool   // origin exists in repo
 	BranchExists   bool   // worktreeBranch already on origin (push will be a fast-forward update)
+	RebranchTo     string // non-empty when ShipWorktree will carve commits onto a new branch before pushing (set when WorktreeBranch == SourceBranch)
 	Err            error
 }
 
 // PreviewShip looks up commit count and remote state without mutating
 // anything. Used to populate the P confirm prompt.
-func PreviewShip(repoPath string, m WorktreeMeta) ShipPreview {
+func PreviewShip(repoPath, wtPath string, m WorktreeMeta) ShipPreview {
 	prev := ShipPreview{
 		SourceBranch:   m.SourceBranch,
 		WorktreeBranch: m.WorktreeBranch,
@@ -72,9 +95,15 @@ func PreviewShip(repoPath string, m WorktreeMeta) ShipPreview {
 		prev.Err = errors.New("worktree metadata missing branches")
 		return prev
 	}
-	// Commits ahead.
+	// Commits ahead. Compute from HEAD when the worktree is on the source
+	// branch (so the preview reflects what's actually on disk, not whatever
+	// the local source branch points at).
+	tip := m.WorktreeBranch
+	if m.WorktreeBranch == m.SourceBranch {
+		tip = "HEAD"
+	}
 	if out, err := exec.Command("git", "-C", repoPath, "rev-list", "--count",
-		m.SourceBranch+".."+m.WorktreeBranch).Output(); err == nil {
+		m.SourceBranch+".."+tip).Output(); err == nil {
 		_, _ = fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &prev.CommitsAhead)
 	}
 	// origin remote present?
@@ -86,21 +115,59 @@ func PreviewShip(repoPath string, m WorktreeMeta) ShipPreview {
 		"refs/remotes/origin/"+m.WorktreeBranch).Run(); err == nil {
 		prev.BranchExists = true
 	}
+	// If the worktree branch IS the source branch, pushing it would write
+	// straight to origin/<source>. Surface that ShipWorktree will instead
+	// carve the commits onto a fresh branch and push that.
+	if m.WorktreeBranch == m.SourceBranch && wtPath != "" {
+		prev.RebranchTo = pickShipBranchName(repoPath, filepath.Base(wtPath))
+	}
 	return prev
 }
 
 // ShipWorktree pushes worktreeBranch to origin and opens a PR via the gh CLI
 // targeting sourceBranch. Returns the PR URL gh prints on success, or the
 // combined output on failure. Requires `gh auth login` to have been run.
+//
+// When the worktree is checked out on the source branch itself (e.g. user
+// picked main via "check out existing"), pushing m.WorktreeBranch would write
+// straight to origin/<source>. To avoid that footgun, ShipWorktree first
+// carves the commits onto a fresh "sedge/<session>" branch, resets the local
+// source branch back to origin/<source> when safe, and pushes the new branch
+// instead. The updated branch name is persisted to .sedge-meta.toml.
 func ShipWorktree(repoPath, wtPath string, m WorktreeMeta) (string, error) {
 	if m.WorktreeBranch == "" || m.SourceBranch == "" {
 		return "", errors.New("worktree metadata missing branches")
 	}
-	// Push from the worktree (its checked-out branch == m.WorktreeBranch).
 	pushDir := wtPath
 	if pushDir == "" {
 		pushDir = repoPath
 	}
+
+	if m.WorktreeBranch == m.SourceBranch {
+		newBranch := pickShipBranchName(repoPath, filepath.Base(wtPath))
+		if newBranch == "" {
+			return "", fmt.Errorf("could not derive an unused sedge/* branch name")
+		}
+		if out, err := exec.Command("git", "-C", pushDir, "checkout", "-b", newBranch).CombinedOutput(); err != nil {
+			return strings.TrimSpace(string(out)), fmt.Errorf("git checkout -b %s: %w", newBranch, err)
+		}
+		// Reset the local source branch back to origin/<source> if available,
+		// so the commits live only on the new branch and the user isn't left
+		// with a polluted local main/master. Only safe when <source> isn't
+		// checked out in another worktree (whose working tree would then
+		// drift from HEAD). Skip silently otherwise.
+		checkedOut, _ := CheckedOutBranches(repoPath)
+		safeToReset := !checkedOut[m.SourceBranch]
+		if safeToReset && exec.Command("git", "-C", pushDir, "rev-parse", "--verify",
+			"refs/remotes/origin/"+m.SourceBranch).Run() == nil {
+			_ = exec.Command("git", "-C", pushDir, "update-ref",
+				"refs/heads/"+m.SourceBranch,
+				"refs/remotes/origin/"+m.SourceBranch).Run()
+		}
+		m.WorktreeBranch = newBranch
+		_ = WriteWorktreeMeta(wtPath, m)
+	}
+
 	pushOut, err := exec.Command("git", "-C", pushDir, "push", "-u", "origin", m.WorktreeBranch).CombinedOutput()
 	if err != nil {
 		return strings.TrimSpace(string(pushOut)), fmt.Errorf("git push: %w", err)

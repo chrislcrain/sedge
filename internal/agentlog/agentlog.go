@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/chrislcrain/sedge/internal/xdg"
 )
 
 // SubAgent is one in-flight Agent-tool call.
@@ -26,11 +28,11 @@ type SubAgent struct {
 // launched in any session jsonl file under the worktree's claude project
 // dir but do not yet have a matching tool_result. Ordered by start time.
 func ActiveSubAgents(wtPath string) ([]SubAgent, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
+	base := xdg.ClaudeProjectsDir()
+	if base == "" {
+		return nil, nil
 	}
-	dir := filepath.Join(home, ".claude", "projects", encode(wtPath))
+	dir := filepath.Join(base, encode(wtPath))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

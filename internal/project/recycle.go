@@ -29,10 +29,11 @@ func Recycle(p Project, wt Worktree) error {
 	}
 
 	// 1. Move the claude session history dir (if present). The conversation
-	// store path is ~/.claude/projects/<encoded-cwd>/, where <encoded-cwd>
-	// is the worktree path with "/" replaced by "-".
-	if home, err := os.UserHomeDir(); err == nil {
-		claudeDir := filepath.Join(home, ".claude", "projects", encodeClaudeProject(wt.Path))
+	// store path is <claude-projects>/<encoded-cwd>/, where <claude-projects>
+	// resolves through $CLAUDE_CONFIG_DIR (falling back to ~/.claude) and
+	// <encoded-cwd> is the worktree path with "/" replaced by "-".
+	if projectsDir := xdg.ClaudeProjectsDir(); projectsDir != "" {
+		claudeDir := filepath.Join(projectsDir, encodeClaudeProject(wt.Path))
 		if _, err := os.Stat(claudeDir); err == nil {
 			dst := filepath.Join(bin, "claude-session")
 			if err := os.Rename(claudeDir, dst); err != nil {
@@ -84,15 +85,16 @@ func encodeClaudeProject(path string) string {
 	return b.String()
 }
 
-// HasClaudeHistory reports whether ~/.claude/projects/<encoded-cwd>/ exists
-// and contains any session files. Used to decide whether to pass --continue
-// when spawning claude in a worktree.
+// HasClaudeHistory reports whether the worktree's Claude session dir
+// (resolved via xdg.ClaudeProjectsDir, which honors $CLAUDE_CONFIG_DIR)
+// exists and contains any session files. Used to decide whether to pass
+// --continue when spawning claude in a worktree.
 func HasClaudeHistory(wtPath string) bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	projectsDir := xdg.ClaudeProjectsDir()
+	if projectsDir == "" {
 		return false
 	}
-	dir := filepath.Join(home, ".claude", "projects", encodeClaudeProject(wtPath))
+	dir := filepath.Join(projectsDir, encodeClaudeProject(wtPath))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/chrislcrain/sedge/internal/xdg"
 )
 
 // FindAgentFile locates the agent JSONL file for a sub-agent in a worktree.
@@ -14,11 +16,11 @@ import (
 // If multiple files share a description, the most recently modified one wins.
 // Returns ("", nil) if nothing matches.
 func FindAgentFile(wtPath, description string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	root := xdg.ClaudeProjectsDir()
+	if root == "" {
+		return "", nil
 	}
-	base := filepath.Join(home, ".claude", "projects", encode(wtPath))
+	base := filepath.Join(root, encode(wtPath))
 	sessionDirs, err := filepath.Glob(filepath.Join(base, "*"))
 	if err != nil {
 		return "", err

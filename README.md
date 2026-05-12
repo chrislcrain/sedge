@@ -156,8 +156,9 @@ verbatim git output surfaces in the status line.
 
 1. Kills the worktree's claude pane (slot or background window).
 2. Runs `git worktree remove --force`.
-3. Moves both the worktree dir and its
-   `~/.claude/projects/<encoded-cwd>/` history dir into
+3. Moves both the worktree dir and its Claude session history dir
+   (`$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/`, falling back to
+   `~/.claude/projects/<encoded-cwd>/` when the env var is unset) into
    `~/.sedge/recycle/<timestamp>-<project>-<session>/`.
 
 The conversation history isn't gone — just recycled. Empty
@@ -258,7 +259,7 @@ Claude's. Concretely:
 | max parallel    | hard-enforced (queues)          | soft prompt guidance                                  |
 | max depth       | hard-enforced (rejects)         | soft guidance + per-sub-agent "do not recurse" prompt |
 | model providers | Anthropic, OpenAI, Ollama, etc. | Anthropic (whatever your `claude` is set to use)      |
-| session storage | own JSONL                       | `~/.claude/projects/...` (claude's)                   |
+| session storage | own JSONL                       | `$CLAUDE_CONFIG_DIR/projects/...` (default `~/.claude/projects/...`) |
 
 If you want hard-enforced parallelism, you'd need an MCP shim that replaces
 Claude Code's `Agent` tool with a sedge-owned implementation that queues. PRs

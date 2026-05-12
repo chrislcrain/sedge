@@ -647,8 +647,12 @@ func (m Model) renderModePrompt() string {
 	case modeConfirmShip:
 		if m.pendingWt != nil {
 			meta := resolveMeta(*m.pendingWtP, *m.pendingWt)
+			headBranch := meta.WorktreeBranch
+			if m.pendingShipPrev != nil && m.pendingShipPrev.RebranchTo != "" {
+				headBranch = m.pendingShipPrev.RebranchTo
+			}
 			b.WriteString("\n")
-			b.WriteString(promptStyle.Render(fmt.Sprintf("Push %s → PR against %s?", meta.WorktreeBranch, meta.SourceBranch)))
+			b.WriteString(promptStyle.Render(fmt.Sprintf("Push %s → PR against %s?", headBranch, meta.SourceBranch)))
 			b.WriteString("\n")
 			if m.pendingShipPrev == nil {
 				b.WriteString(helpStyle.Render("  (checking…)"))
@@ -668,7 +672,9 @@ func (m Model) renderModePrompt() string {
 					} else {
 						bits = append(bits, fmt.Sprintf("%d commits to push", p.CommitsAhead))
 					}
-					if p.BranchExists {
+					if p.RebranchTo != "" {
+						bits = append(bits, fmt.Sprintf("worktree is on %s — will carve commits onto %s first", p.SourceBranch, p.RebranchTo))
+					} else if p.BranchExists {
 						bits = append(bits, "branch already on origin (will fast-forward)")
 					}
 					b.WriteString(helpStyle.Render("  " + strings.Join(bits, " · ")))
@@ -936,7 +942,7 @@ type shipPreviewMsg project.ShipPreview
 func previewShipCmd(p project.Project, wt project.Worktree) tea.Cmd {
 	return func() tea.Msg {
 		meta := resolveMeta(p, wt)
-		return shipPreviewMsg(project.PreviewShip(p.Path, meta))
+		return shipPreviewMsg(project.PreviewShip(p.Path, wt.Path, meta))
 	}
 }
 
