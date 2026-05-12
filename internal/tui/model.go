@@ -66,6 +66,7 @@ const (
 	modePromptSession
 	modeSelectBranch
 	modePromptNewBranch
+	modePromptWorktreePath
 	modePromptProject
 	modeConfirmDelete
 	modeConfirmCleanExit
@@ -94,7 +95,8 @@ type Model struct {
 	input textinput.Model
 
 	pendingProject     *project.Project  // for modePromptSession/modeSelectBranch (which project gets the new session)
-	pendingSessionName string            // session name carried from modePromptSession into modeSelectBranch
+	pendingSessionName string            // session name carried through the create flow
+	pendingBranchInput string            // branch (or empty for default mode) carried through the create flow
 	branchOptions      []branchOption    // populated when entering modeSelectBranch
 	branchCursor       int               // selection index into branchOptions
 	pendingWt          *project.Worktree // for modeConfirmDelete/modeConfirmMerge (which wt)
@@ -150,7 +152,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch m.mode {
-		case modePromptSession, modePromptNewBranch, modePromptProject:
+		case modePromptSession, modePromptNewBranch, modePromptWorktreePath, modePromptProject:
 			return m.updatePromptInput(msg)
 		case modeSelectBranch:
 			return m.updateSelectBranch(msg)
@@ -275,6 +277,7 @@ func (m Model) updatePromptInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Blur()
 		m.pendingProject = nil
 		m.pendingSessionName = ""
+		m.pendingBranchInput = ""
 		return m, nil
 	case tea.KeyEnter:
 		value := strings.TrimSpace(m.input.Value())
@@ -288,20 +291,26 @@ func (m Model) updatePromptInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeSelectBranch
 			return m, nil
 		case modePromptNewBranch:
+			// Captured the new branch name; move on to the path prompt.
+			m.pendingBranchInput = value
+			return m, m.enterPromptWorktreePath()
+		case modePromptWorktreePath:
 			p := m.pendingProject
 			session := m.pendingSessionName
+			branch := m.pendingBranchInput
 			m.mode = modeList
 			m.input.Blur()
 			m.pendingProject = nil
 			m.pendingSessionName = ""
-			return m, spawnSessionCmd(*p, session, value, m.cfg)
+			m.pendingBranchInput = ""
+			return m, spawnSessionCmd(*p, session, branch, value, m.cfg)
 		case modePromptProject:
 			m.mode = modeList
 			m.input.Blur()
 			return m, addProjectCmd(value)
 		}
 	case tea.KeyTab:
-		if m.mode == modePromptProject {
+		if m.mode == modePromptProject || m.mode == modePromptWorktreePath {
 			if completed, ok := completePath(m.input.Value()); ok {
 				m.input.SetValue(completed)
 				m.input.SetCursor(len(completed))
@@ -348,26 +357,40 @@ func (m Model) updateSelectBranch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, textinput.Blink
 		case opt.useDef:
 			// Default mode: empty branchInput → spec creates new sedge/<session> off default.
-			p := m.pendingProject
-			session := m.pendingSessionName
-			m.mode = modeList
-			m.pendingProject = nil
-			m.pendingSessionName = ""
+			m.pendingBranchInput = ""
 			m.branchOptions = nil
-			return m, spawnSessionCmd(*p, session, "", m.cfg)
+			return m, m.enterPromptWorktreePath()
 		default:
 			// Check out an existing local branch.
-			p := m.pendingProject
-			session := m.pendingSessionName
-			branch := opt.branch
-			m.mode = modeList
-			m.pendingProject = nil
-			m.pendingSessionName = ""
+			m.pendingBranchInput = opt.branch
 			m.branchOptions = nil
-			return m, spawnSessionCmd(*p, session, branch, m.cfg)
+			return m, m.enterPromptWorktreePath()
 		}
 	}
 	return m, nil
+}
+
+// enterPromptWorktreePath transitions into the worktree-path prompt with a
+// sensible default pre-filled so the user can hit Enter to accept or edit.
+func (m *Model) enterPromptWorktreePath() tea.Cmd {
+	p := m.pendingProject
+	if p == nil {
+		m.mode = modeList
+		return nil
+	}
+	session := slugifySession(m.pendingSessionName)
+	if session == "" {
+		session = fmt.Sprintf("s%d", time.Now().Unix())
+		m.pendingSessionName = session
+	}
+	def := project.WorktreePath(m.cfg.WorktreesRoot, *p, session)
+	m.input.Reset()
+	m.input.Placeholder = def
+	m.input.SetValue(def)
+	m.input.SetCursor(len(def))
+	m.input.Focus()
+	m.mode = modePromptWorktreePath
+	return textinput.Blink
 }
 
 // buildBranchOptions composes the list shown in modeSelectBranch.
@@ -507,6 +530,12 @@ func (m Model) View() string {
 		b.WriteString("\n")
 		b.WriteString(promptStyle.Render("New branch name:"))
 		b.WriteString("\n  " + m.input.View())
+	case modePromptWorktreePath:
+		b.WriteString("\n")
+		b.WriteString(promptStyle.Render("Worktree path:"))
+		b.WriteString("\n  " + m.input.View())
+		b.WriteString("\n")
+		b.WriteString(helpStyle.Render("⏎  accept · Tab complete · esc cancel"))
 	case modePromptProject:
 		b.WriteString("\n")
 		b.WriteString(promptStyle.Render("Path to git repo:"))
@@ -725,14 +754,17 @@ func reloadCfgCmd() tea.Cmd {
 	}
 }
 
-// spawnSessionCmd creates a worktree per the user's branch input, then swaps
+// spawnSessionCmd creates a worktree per the user's choices, then swaps
 // claude into the slot.
 //
 // branchInput interpretation:
 //   - "" → base on default branch, create new "sedge/<session>" branch
 //   - existing local branch → check out that branch directly (no new branch)
 //   - any other name → create that name as a new branch off the default branch
-func spawnSessionCmd(p project.Project, requestedName, branchInput string, cfg project.Config) tea.Cmd {
+//
+// wtPathInput is the user-chosen on-disk path for the worktree. Empty falls
+// back to the sedge default (worktrees_root/<project>/<session>).
+func spawnSessionCmd(p project.Project, requestedName, branchInput, wtPathInput string, cfg project.Config) tea.Cmd {
 	return func() tea.Msg {
 		sessionName := slugifySession(requestedName)
 		if sessionName == "" {
@@ -742,7 +774,12 @@ func spawnSessionCmd(p project.Project, requestedName, branchInput string, cfg p
 		if defaultBranch == "" {
 			defaultBranch = project.DetectDefaultBranch(p.Path)
 		}
-		wtPath := project.WorktreePath(cfg.WorktreesRoot, p, sessionName)
+		wtPath := strings.TrimSpace(wtPathInput)
+		if wtPath == "" {
+			wtPath = project.WorktreePath(cfg.WorktreesRoot, p, sessionName)
+		} else {
+			wtPath = expandUser(wtPath)
+		}
 
 		spec := project.WorktreeSpec{
 			RepoPath:    p.Path,

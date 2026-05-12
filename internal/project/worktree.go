@@ -171,11 +171,21 @@ func ListWorktrees(repoPath string) ([]Worktree, error) {
 	}
 	var results []Worktree
 	var cur Worktree
+	repoAbs, _ := filepath.Abs(repoPath)
 	flush := func() {
-		if cur.Path != "" && strings.HasPrefix(cur.Branch, "sedge/") {
-			cur.SessionName = filepath.Base(cur.Path)
-			results = append(results, cur)
+		if cur.Path == "" {
+			return
 		}
+		// Skip the main worktree (the project repo itself); include
+		// every other worktree regardless of branch naming so worktrees
+		// on existing branches or with custom branch names are surfaced.
+		curAbs, _ := filepath.Abs(cur.Path)
+		if curAbs == repoAbs {
+			cur = Worktree{}
+			return
+		}
+		cur.SessionName = filepath.Base(cur.Path)
+		results = append(results, cur)
 		cur = Worktree{}
 	}
 	for _, line := range strings.Split(string(out), "\n") {
