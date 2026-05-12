@@ -11,6 +11,25 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// existingPRURL returns the URL of an open PR on origin with the given
+// head/base, or "" if none exists or gh can't tell us. Best-effort: any gh
+// error (missing CLI, not authenticated, no remote) is treated as "no PR" so
+// ShipWorktree falls through to its normal create path.
+func existingPRURL(workDir, head, base string) string {
+	cmd := exec.Command("gh", "pr", "list",
+		"--head", head,
+		"--base", base,
+		"--state", "open",
+		"--json", "url",
+		"--jq", ".[0].url")
+	cmd.Dir = workDir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // pickShipBranchName returns a "sedge/<session>" branch name that does not
 // already exist locally or on origin. Falls back to appending -1, -2, … on
 // collision. Returns "" if no unused name was found within a reasonable bound.
@@ -80,6 +99,7 @@ type ShipPreview struct {
 	CommitsAhead   int    // commits in worktreeBranch not in sourceBranch
 	HasRemote      bool   // origin exists in repo
 	BranchExists   bool   // worktreeBranch already on origin (push will be a fast-forward update)
+	ExistingPRURL  string // non-empty when an open PR already exists for worktreeBranch → sourceBranch; ShipWorktree will push only and skip gh pr create
 	RebranchTo     string // non-empty when ShipWorktree will carve commits onto a new branch before pushing (set when WorktreeBranch == SourceBranch)
 	Err            error
 }
@@ -120,6 +140,15 @@ func PreviewShip(repoPath, wtPath string, m WorktreeMeta) ShipPreview {
 	// carve the commits onto a fresh branch and push that.
 	if m.WorktreeBranch == m.SourceBranch && wtPath != "" {
 		prev.RebranchTo = pickShipBranchName(repoPath, filepath.Base(wtPath))
+	}
+	// Open PR already targeting this head/base? Use the branch ShipWorktree
+	// will actually push (RebranchTo wins when set).
+	headForPR := m.WorktreeBranch
+	if prev.RebranchTo != "" {
+		headForPR = prev.RebranchTo
+	}
+	if prev.HasRemote && headForPR != m.SourceBranch {
+		prev.ExistingPRURL = existingPRURL(repoPath, headForPR, m.SourceBranch)
 	}
 	return prev
 }
@@ -171,6 +200,11 @@ func ShipWorktree(repoPath, wtPath string, m WorktreeMeta) (string, error) {
 	pushOut, err := exec.Command("git", "-C", pushDir, "push", "-u", "origin", m.WorktreeBranch).CombinedOutput()
 	if err != nil {
 		return strings.TrimSpace(string(pushOut)), fmt.Errorf("git push: %w", err)
+	}
+	// If an open PR already exists for this head→base, the push above just
+	// updated it. Don't try to create a duplicate.
+	if url := existingPRURL(pushDir, m.WorktreeBranch, m.SourceBranch); url != "" {
+		return "updated PR " + url, nil
 	}
 	// Create the PR. --fill auto-derives title/body from the branch's commits.
 	cmd := exec.Command("gh", "pr", "create",

@@ -649,11 +649,19 @@ func (m Model) renderModePrompt() string {
 		if m.pendingWt != nil {
 			meta := resolveMeta(*m.pendingWtP, *m.pendingWt)
 			headBranch := meta.WorktreeBranch
-			if m.pendingShipPrev != nil && m.pendingShipPrev.RebranchTo != "" {
-				headBranch = m.pendingShipPrev.RebranchTo
+			updateExisting := false
+			if m.pendingShipPrev != nil {
+				if m.pendingShipPrev.RebranchTo != "" {
+					headBranch = m.pendingShipPrev.RebranchTo
+				}
+				updateExisting = m.pendingShipPrev.ExistingPRURL != ""
 			}
 			b.WriteString("\n")
-			b.WriteString(promptStyle.Render(fmt.Sprintf("Push %s → PR against %s?", headBranch, meta.SourceBranch)))
+			action := "PR against"
+			if updateExisting {
+				action = "update existing PR against"
+			}
+			b.WriteString(promptStyle.Render(fmt.Sprintf("Push %s → %s %s?", headBranch, action, meta.SourceBranch)))
 			b.WriteString("\n")
 			if m.pendingShipPrev == nil {
 				b.WriteString(helpStyle.Render("  (checking…)"))
@@ -675,7 +683,10 @@ func (m Model) renderModePrompt() string {
 					}
 					if p.RebranchTo != "" {
 						bits = append(bits, fmt.Sprintf("worktree is on %s — will carve commits onto %s first", p.SourceBranch, p.RebranchTo))
-					} else if p.BranchExists {
+					}
+					if p.ExistingPRURL != "" {
+						bits = append(bits, "PR exists — will update "+p.ExistingPRURL)
+					} else if p.BranchExists && p.RebranchTo == "" {
 						bits = append(bits, "branch already on origin (will fast-forward)")
 					}
 					b.WriteString(helpStyle.Render("  " + strings.Join(bits, " · ")))
