@@ -101,6 +101,7 @@ type Model struct {
 	branchCursor       int               // selection index into branchOptions
 	pendingWt          *project.Worktree // for modeConfirmDelete/modeConfirmMerge (which wt)
 	pendingWtP         *project.Project  // for modeConfirmDelete/modeConfirmMerge (its project)
+	pendingMergePrev   *project.MergePreview // dry-run result shown in modeConfirmMerge
 }
 
 func New() (Model, error) {
@@ -217,6 +218,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = string(msg)
 		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), clearStatusAfter(4*time.Second))
 
+	case mergePreviewMsg:
+		if m.mode == modeConfirmMerge {
+			p := project.MergePreview(msg)
+			m.pendingMergePrev = &p
+		}
+		return m, nil
+
 	case tickMsg:
 		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), tickCmd())
 	}
@@ -252,7 +260,9 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if r, ok := m.currentRow(); ok && r.kind == rowWorktree {
 			m.pendingWt = r.wt
 			m.pendingWtP = r.project
+			m.pendingMergePrev = nil
 			m.mode = modeConfirmMerge
+			return m, previewMergeCmd(*r.project, *r.wt)
 		}
 		return m, nil
 	case actAddProject:
@@ -456,11 +466,13 @@ func (m Model) updateConfirmMerge(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modeList
 		m.pendingWt = nil
 		m.pendingWtP = nil
+		m.pendingMergePrev = nil
 		return m, mergeWorktreeCmd(*p, *wt)
 	default:
 		m.mode = modeList
 		m.pendingWt = nil
 		m.pendingWtP = nil
+		m.pendingMergePrev = nil
 		return m, nil
 	}
 }
@@ -514,8 +526,41 @@ func (m Model) View() string {
 		}
 	}
 
-	b.WriteString("\n")
-	b.WriteString(renderHelp())
+	// Mode-specific prompt content (rendered before the bottom-anchored help).
+	prompt := m.renderModePrompt()
+	statusLine := m.renderStatusLine()
+
+	// Anchor the help to the bottom of the pane: pad with blank lines so the
+	// help and any status/prompt content sit at the bottom regardless of how
+	// many projects/worktrees are in the tree.
+	help := renderHelp()
+	contentSoFar := lipgloss.Height(b.String())
+	bottomBlock := help
+	if prompt != "" {
+		bottomBlock = prompt + "\n" + bottomBlock
+	}
+	if statusLine != "" {
+		bottomBlock = bottomBlock + "\n" + statusLine
+	}
+	bottomHeight := lipgloss.Height(bottomBlock)
+	if m.h > 0 {
+		gap := m.h - contentSoFar - bottomHeight - 1
+		if gap > 0 {
+			b.WriteString(strings.Repeat("\n", gap))
+		} else {
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString("\n\n")
+	}
+	b.WriteString(bottomBlock)
+	return b.String()
+}
+
+// renderModePrompt returns the mode-specific prompt block (input prompts,
+// confirm prompts, branch picker, etc.) — empty string in modeList.
+func (m Model) renderModePrompt() string {
+	var b strings.Builder
 
 	switch m.mode {
 	case modePromptSession:
@@ -571,21 +616,54 @@ func (m Model) View() string {
 				wtBranch = m.pendingWt.Branch
 			}
 			b.WriteString("\n")
-			b.WriteString(promptStyle.Render(fmt.Sprintf("Merge %s into %s? (y/N)", wtBranch, src)))
+			b.WriteString(promptStyle.Render(fmt.Sprintf("Merge %s → %s?", wtBranch, src)))
+			b.WriteString("\n")
+			if m.pendingMergePrev == nil {
+				b.WriteString(helpStyle.Render("  (checking…)"))
+			} else {
+				p := m.pendingMergePrev
+				switch {
+				case p.Err != nil:
+					b.WriteString(errStyle.Render("  preview failed: " + p.Err.Error()))
+				case p.AlreadyMerged:
+					b.WriteString(helpStyle.Render("  already merged — nothing to do"))
+				case p.Clean:
+					b.WriteString(helpStyle.Render("  clean merge"))
+				default:
+					files := p.Conflicts
+					more := 0
+					if len(files) > 4 {
+						more = len(files) - 4
+						files = files[:4]
+					}
+					b.WriteString(errStyle.Render(fmt.Sprintf("  CONFLICTS (%d): %s", len(p.Conflicts)+more, strings.Join(files, ", "))))
+					if more > 0 {
+						b.WriteString(errStyle.Render(fmt.Sprintf(" +%d more", more)))
+					}
+				}
+				if p.NeedsCheckout && p.CurrentBranch != "" {
+					b.WriteString("\n")
+					b.WriteString(helpStyle.Render(fmt.Sprintf("  project dir on '%s' — sedge will switch to '%s' first", p.CurrentBranch, src)))
+				}
+			}
+			b.WriteString("\n")
+			b.WriteString(promptStyle.Render("Proceed? (y/N)"))
 		}
 	case modeConfirmCleanExit:
 		b.WriteString("\n")
 		b.WriteString(promptStyle.Render("Kill all sedge claude sessions and quit? (y/N)"))
 	}
-
-	if m.err != nil {
-		b.WriteString("\n")
-		b.WriteString(errStyle.Render("error: " + m.err.Error()))
-	} else if m.status != "" {
-		b.WriteString("\n")
-		b.WriteString(helpStyle.Render(m.status))
-	}
 	return b.String()
+}
+
+func (m Model) renderStatusLine() string {
+	if m.err != nil {
+		return errStyle.Render("error: " + m.err.Error())
+	}
+	if m.status != "" {
+		return helpStyle.Render(m.status)
+	}
+	return ""
 }
 
 func dividerWidth(w int) int {
@@ -822,6 +900,21 @@ func spawnSessionCmd(p project.Project, requestedName, branchInput, wtPathInput 
 			wtBranch = project.BranchName(sessionName)
 		}
 		return spawnIntoSlot(p, project.Worktree{SessionName: sessionName, Path: wtPath, Branch: wtBranch}, cfg)
+	}
+}
+
+type mergePreviewMsg project.MergePreview
+
+func previewMergeCmd(p project.Project, wt project.Worktree) tea.Cmd {
+	return func() tea.Msg {
+		meta, err := project.ReadWorktreeMeta(wt.Path)
+		if err != nil {
+			meta = project.WorktreeMeta{
+				SourceBranch:   p.ResolvedDefaultBranch(),
+				WorktreeBranch: wt.Branch,
+			}
+		}
+		return mergePreviewMsg(project.PreviewMerge(p.Path, meta))
 	}
 }
 
