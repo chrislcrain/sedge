@@ -13,7 +13,8 @@ type Config struct {
 	DefaultPermissionMode string    `toml:"default_permission_mode"`
 	DefaultModel          string    `toml:"default_model,omitempty"`
 	WorktreesRoot         string    `toml:"worktrees_root,omitempty"`
-	SlotWidthPercent      int       `toml:"slot_width_percent,omitempty"`       // claude pane size; sedge gets the rest. default 80.
+	SlotWidthPercent      int       `toml:"slot_width_percent,omitempty"`       // legacy: claude pane percentage. Used only if SedgeWidthCols is unset.
+	SedgeWidthCols        int       `toml:"sedge_width_cols,omitempty"`         // absolute width for the sedge pane (banner + margin). Claude gets window_width minus this. Default 34.
 	MaxParallelSubAgents  int       `toml:"max_parallel_subagents,omitempty"`   // soft cap injected as guidance. mirrors Mux's maxParallelAgentTasks. default 3.
 	MaxSubAgentDepth      int       `toml:"max_subagent_depth,omitempty"`       // mirrors Mux's maxTaskNestingDepth. default 3 (sedge ships sub-agents that hard-stop at depth 1).
 	Projects              []Project `toml:"projects,omitempty"`
@@ -24,6 +25,7 @@ func defaults() Config {
 		DefaultPermissionMode: "auto",
 		WorktreesRoot:         "~/.sedge/worktrees",
 		SlotWidthPercent:      80,
+		SedgeWidthCols:        34,
 		MaxParallelSubAgents:  3,
 		MaxSubAgentDepth:      3,
 	}
@@ -53,6 +55,9 @@ func Load() (Config, error) {
 	}
 	if cfg.SlotWidthPercent <= 0 || cfg.SlotWidthPercent >= 100 {
 		cfg.SlotWidthPercent = 80
+	}
+	if cfg.SedgeWidthCols <= 0 {
+		cfg.SedgeWidthCols = 34
 	}
 	if cfg.MaxParallelSubAgents <= 0 {
 		cfg.MaxParallelSubAgents = 3

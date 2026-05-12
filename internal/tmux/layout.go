@@ -148,18 +148,19 @@ func WindowActivity(windowID string) bool {
 	return strings.TrimSpace(string(out)) == "1"
 }
 
-// SwapInPane makes targetPaneID the visible slot next to sedge. slotWidthPct
-// is the percentage of the window the new pane (claude) takes; sedge gets the
-// remainder.
+// SwapInPane makes targetPaneID the visible slot next to sedge. sedgeCols is
+// the absolute number of columns sedge keeps; claude (the joined pane) gets
+// the rest of the window. If sedgeCols <= 0 a percentage fallback is used.
 //
 // Algorithm:
 //  1. If sedgePaneID and targetPaneID are already in the same window, just
 //     focus the target.
 //  2. Otherwise, break the current slot back to its own background window
 //     (named after its worktree session) so its process keeps running.
-//  3. join-pane the target into sedge's window at slotWidthPct.
+//  3. join-pane the target into sedge's window sized so sedge ends up at
+//     sedgeCols columns.
 //  4. Focus the newly-joined pane.
-func SwapInPane(sedgePaneID, targetPaneID string, slotWidthPct int) error {
+func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct int) error {
 	if sedgePaneID == "" {
 		return fmt.Errorf("sedge pane id unknown (TMUX_PANE not set)")
 	}
@@ -198,15 +199,45 @@ func SwapInPane(sedgePaneID, targetPaneID string, slotWidthPct int) error {
 		}
 	}
 
-	if slotWidthPct <= 0 || slotWidthPct >= 100 {
-		slotWidthPct = 80
-	}
-	sizeArg := fmt.Sprintf("%d%%", slotWidthPct)
+	sizeArg := computeJoinSize(sedgePaneID, sedgeCols, fallbackSlotPct)
 	if _, err := run("join-pane", "-h", "-l", sizeArg, "-s", targetPaneID, "-t", sedgePaneID); err != nil {
 		return err
 	}
 	_, err = run("select-pane", "-t", targetPaneID)
 	return err
+}
+
+// computeJoinSize derives the -l argument for join-pane. If sedgeCols > 0,
+// claude is sized so sedge ends up at sedgeCols (claude takes the rest).
+// Otherwise we fall back to slotPct as a percentage.
+func computeJoinSize(sedgePaneID string, sedgeCols, slotPct int) string {
+	if sedgeCols > 0 {
+		out, err := exec.Command("tmux", "display-message", "-p", "-t", sedgePaneID, "#{window_width}").Output()
+		if err == nil {
+			if w := atoiSafe(strings.TrimSpace(string(out))); w > 0 {
+				claudeWidth := w - sedgeCols
+				if claudeWidth < 20 {
+					claudeWidth = w / 2 // fallback if window is tiny
+				}
+				return fmt.Sprintf("%d", claudeWidth)
+			}
+		}
+	}
+	if slotPct <= 0 || slotPct >= 100 {
+		slotPct = 80
+	}
+	return fmt.Sprintf("%d%%", slotPct)
+}
+
+func atoiSafe(s string) int {
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
 }
 
 // slotWindowName derives a reasonable tmux window name for the slot pane,
