@@ -127,8 +127,14 @@ type (
 		project string
 		list    []project.Worktree
 	}
-	spawnedMsg struct{ pane string }
-	focusedMsg struct{ pane string }
+	spawnedMsg struct {
+		pane    string
+		paneID  string // tmux pane id for re-focusing post-render
+	}
+	focusedMsg struct {
+		pane   string
+		paneID string
+	}
 	deletedMsg struct{ session string }
 	errMsg     struct{ err error }
 	clearStat  struct{}
@@ -180,11 +186,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spawnedMsg:
 		m.status = "spawned " + msg.pane
-		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), clearStatusAfter(3*time.Second))
+		return m, tea.Batch(
+			loadAllWorktreesCmd(m.cfg),
+			refocusPaneCmd(msg.paneID),
+			clearStatusAfter(3*time.Second),
+		)
 
 	case focusedMsg:
 		m.status = "active: " + msg.pane
-		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), clearStatusAfter(2*time.Second))
+		return m, tea.Batch(
+			loadAllWorktreesCmd(m.cfg),
+			refocusPaneCmd(msg.paneID),
+			clearStatusAfter(2*time.Second),
+		)
 
 	case deletedMsg:
 		m.status = "recycled " + msg.session
@@ -887,7 +901,7 @@ func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) t
 	if err := tmux.SwapInPane(sedgePane, newPane, cfg.SedgeWidthCols, cfg.SlotWidthPercent); err != nil {
 		return errMsg{err}
 	}
-	return spawnedMsg{pane: wt.SessionName}
+	return spawnedMsg{pane: wt.SessionName, paneID: newPane}
 }
 
 func deleteWorktreeCmd(p project.Project, wt project.Worktree) tea.Cmd {
@@ -934,6 +948,19 @@ func addProjectCmd(pathInput string) tea.Cmd {
 		}
 		return reloadedMsg{cfg: cfg}
 	}
+}
+
+// refocusPaneCmd schedules a tmux select-pane to fire AFTER the current
+// bubbletea render completes, so the keyboard focus reliably lands on the
+// claude pane post-spawn rather than bouncing back to sedge.
+func refocusPaneCmd(paneID string) tea.Cmd {
+	if paneID == "" {
+		return nil
+	}
+	return tea.Tick(80*time.Millisecond, func(time.Time) tea.Msg {
+		_ = tmux.FocusPane(paneID)
+		return nil
+	})
 }
 
 func cleanExitCmd(worktreesRoot string) tea.Cmd {

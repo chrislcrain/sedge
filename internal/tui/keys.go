@@ -41,7 +41,10 @@ func keyFor(msg tea.KeyMsg) keyAction {
 		return actCleanExit
 	case "M":
 		return actMerge
-	case "q", "ctrl+c", "esc":
+	case "q", "ctrl+c":
+		// esc deliberately omitted: it's used to cancel prompts and we
+		// don't want it to terminate sedge if the user pressed it while
+		// the sedge pane unexpectedly held focus.
 		return actQuit
 	}
 	return actNone

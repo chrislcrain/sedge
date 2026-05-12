@@ -255,6 +255,16 @@ func slotWindowName(paneID string) string {
 	return filepath.Base(p)
 }
 
+// FocusPane explicitly selects a tmux pane, used after swap-in to make sure
+// the keyboard focus reliably lands on the newly-visible claude pane.
+func FocusPane(paneID string) error {
+	if paneID == "" {
+		return nil
+	}
+	_, err := run("select-pane", "-t", paneID)
+	return err
+}
+
 // KillSlotPane kills the slot pane if one exists. Used by the delete flow.
 func KillSlotPane(sedgePaneID string) error {
 	if sedgePaneID == "" {
