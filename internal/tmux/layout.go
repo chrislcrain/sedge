@@ -174,16 +174,48 @@ func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct
 		return err
 	}
 
+	// Capture the user's current sedge pane width BEFORE detaching the slot
+	// so we can preserve manual resizes across swaps. Only meaningful when a
+	// slot pane is currently sharing the window with sedge — otherwise sedge
+	// already fills the window and the captured width is the full width.
+	slot, err := findSlotPane(sedgePaneID)
+	if err != nil {
+		return err
+	}
+	preservedCols := 0
+	if slot != "" {
+		preservedCols = paneCols(sedgePaneID)
+	}
+
 	if err := DetachSlotPane(sedgePaneID); err != nil {
 		return err
 	}
 
-	sizeArg := computeJoinSize(sedgePaneID, sedgeCols, fallbackSlotPct)
+	// If we captured a user-set width, honour it; only fall back to the
+	// configured/computed sedgeCols when we don't have one (first swap).
+	desiredSedgeCols := sedgeCols
+	if preservedCols > 0 {
+		desiredSedgeCols = preservedCols
+	}
+	sizeArg := computeJoinSize(sedgePaneID, desiredSedgeCols, fallbackSlotPct)
 	if _, err := run("join-pane", "-h", "-l", sizeArg, "-s", targetPaneID, "-t", sedgePaneID); err != nil {
 		return err
 	}
 	_, err = run("select-pane", "-t", targetPaneID)
 	return err
+}
+
+// paneCols returns the current width (in columns) of the given pane, or 0
+// if it can't be determined.
+func paneCols(paneID string) int {
+	if paneID == "" {
+		return 0
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", paneID, "#{pane_width}").Output()
+	if err != nil {
+		return 0
+	}
+	return atoiSafe(strings.TrimSpace(string(out)))
 }
 
 // computeJoinSize derives the -l argument for join-pane. If sedgeCols > 0,
