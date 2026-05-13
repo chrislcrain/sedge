@@ -85,7 +85,7 @@ process is killed.
 
   ▾ my-app   (2)
    │ ● feature-payments        ← currently in the slot (green dot)
-   │ ⚠ explore-cache           ← background, has new output (amber)
+   │ ● explore-cache           ← background, has new output (blinking yellow)
    │   ↳ explorer find caches  ← live sub-agent under explore-cache
    │ + new session
 ─────────────────────────────
@@ -96,10 +96,10 @@ process is killed.
 
 | dot                | meaning                                                        |
 | ------------------ | -------------------------------------------------------------- |
-| `●` green          | active in the slot pane                                        |
-| `⚠` amber blinking | live in background AND has new tmux activity since last viewed |
-| `◐` gray           | live in background, idle                                       |
-| `○` gray           | dormant — no live pane (will spawn fresh on selection)         |
+| `●` green           | active in the slot pane                                        |
+| `●` yellow blinking | live in background AND its claude session JSONL has advanced since you last viewed it |
+| `◐` gray            | live in background, idle                                       |
+| `○` gray            | dormant — no live pane (will spawn fresh on selection)         |
 
 Sub-agent calls (Claude's `Agent` tool) appear as `↳ <type> <description>`
 indented under their parent worktree, and disappear automatically as soon as
@@ -113,6 +113,7 @@ the sub-agent's `tool_result` arrives (3 s polling).
 | `Enter`               | on project: expand / collapse · on worktree: swap into slot · on `+ new session`: prompt-create · on `↳ subagent`: tail its log in a pane below claude |
 | `n`                   | add a new project (path prompt with `Tab` autocomplete)                                                                                                |
 | `o`                   | open a shell pane to the right of the claude pane in the worktree's cwd                                                                                |
+| `A`                   | on a project row: start a fresh ad-hoc claude session against the project's main repo (no worktree, no `--continue`)                                   |
 | `D`                   | delete the worktree under the cursor (confirms `y/N`, recycles to `~/.sedge/recycle/`)                                                                 |
 | `P`                   | push the worktree's branch to `origin` and open (or update) a PR against its source branch (confirms `y/N`)                                            |
 | `e`                   | open `~/.sedge/config.toml` in `$EDITOR`                                                                                                               |

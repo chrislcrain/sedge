@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/chrislcrain/sedge/internal/xdg"
 )
@@ -150,6 +151,7 @@ type Worktree struct {
 	Branch      string         // e.g. "sedge/s1700000000"
 	State       WtState        // populated by the TUI loader from tmux pane info
 	WindowID    string         // tmux window id for the background claude pane (when alive)
+	JSONLMtime  time.Time      // newest mtime across the worktree's claude session JSONLs (zero if none)
 	SubAgents   []SubAgentInfo // in-flight sub-agent calls (populated by the TUI loader)
 }
 

@@ -49,7 +49,7 @@ var (
 			Foreground(lipgloss.Color("244")) // dim cool gray for idle background
 
 	waitingStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")). // amber — needs attention
+			Foreground(lipgloss.Color("226")). // bright yellow — activity in a non-visible worktree
 			Bold(true).
 			Blink(true)
 
