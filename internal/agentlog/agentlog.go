@@ -24,6 +24,38 @@ type SubAgent struct {
 	StartedAt   time.Time // timestamp on the assistant message that launched it
 }
 
+// LatestJSONLMtime returns the most recent mtime across all *.jsonl files in
+// the worktree's Claude project session dir, or the zero time if no files
+// exist. sedge uses this as a "did claude do anything since I last viewed
+// this worktree" signal — it's strictly more reliable than tmux's
+// window_activity_flag because it only ticks on real claude turns/tool
+// events, never on incidental terminal output.
+func LatestJSONLMtime(wtPath string) time.Time {
+	base := xdg.ClaudeProjectsDir()
+	if base == "" {
+		return time.Time{}
+	}
+	dir := filepath.Join(base, encode(wtPath))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return time.Time{}
+	}
+	var latest time.Time
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if mt := info.ModTime(); mt.After(latest) {
+			latest = mt
+		}
+	}
+	return latest
+}
+
 // ActiveSubAgents returns the list of Agent tool calls that have been
 // launched in any session jsonl file under the worktree's claude project
 // dir but do not yet have a matching tool_result. Ordered by start time.

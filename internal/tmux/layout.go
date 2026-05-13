@@ -106,6 +106,14 @@ func ActiveSlotPath(sedgePaneID string) (string, error) {
 // FindWorktreeWindow searches the current tmux session for the window/pane
 // whose pane_current_path equals cwd. Returns ("","",nil) if no match.
 func FindWorktreeWindow(cwd string) (windowID, paneID string, err error) {
+	return FindWindowForCwd(cwd, "")
+}
+
+// FindWindowForCwd is FindWorktreeWindow with an excluded pane id. Useful when
+// the caller wants to avoid matching its own pane (e.g. the sedge pane when
+// sedge was launched from inside the very directory we're searching for, as
+// happens with adhoc-chat against a project root).
+func FindWindowForCwd(cwd, excludePaneID string) (windowID, paneID string, err error) {
 	session, _ := CurrentSession()
 	args := []string{"list-panes"}
 	if session == "" {
@@ -127,25 +135,14 @@ func FindWorktreeWindow(cwd string) (windowID, paneID string, err error) {
 		if len(parts) != 3 {
 			continue
 		}
+		if parts[1] == excludePaneID {
+			continue
+		}
 		if parts[2] == cwd {
 			return parts[0], parts[1], nil
 		}
 	}
 	return "", "", nil
-}
-
-// WindowActivity reports whether the named tmux window currently has the
-// monitor-activity "new output since last viewed" flag set. Returns false if
-// the window doesn't exist or the flag isn't set.
-func WindowActivity(windowID string) bool {
-	if windowID == "" {
-		return false
-	}
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", windowID, "#{window_activity_flag}").Output()
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(out)) == "1"
 }
 
 // SwapInPane makes targetPaneID the visible slot next to sedge. sedgeCols is
@@ -177,26 +174,8 @@ func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct
 		return err
 	}
 
-	slot, err := findSlotPane(sedgePaneID)
-	if err != nil {
+	if err := DetachSlotPane(sedgePaneID); err != nil {
 		return err
-	}
-	if slot != "" {
-		// Detach the previous slot into its own background window, named
-		// after its worktree (so it shows up in `tmux list-windows`).
-		name := slotWindowName(slot)
-		args := []string{"break-pane", "-d", "-s", slot}
-		if name != "" {
-			args = append(args, "-n", name)
-		}
-		out, brErr := exec.Command("tmux", args...).CombinedOutput()
-		if brErr != nil {
-			return fmt.Errorf("break-pane: %w: %s", brErr, strings.TrimSpace(string(out)))
-		}
-		// Re-enable activity monitoring on the new (background) window.
-		if name != "" {
-			_, _ = run("set-window-option", "-t", "@:"+name, "monitor-activity", "on")
-		}
 	}
 
 	sizeArg := computeJoinSize(sedgePaneID, sedgeCols, fallbackSlotPct)
@@ -279,6 +258,33 @@ func FocusPane(paneID string) error {
 	}
 	_, err := run("select-pane", "-t", paneID)
 	return err
+}
+
+// DetachSlotPane breaks the current slot pane (if any) back to its own
+// background tmux window so the process inside it keeps running while no
+// longer sharing the sedge window. No-op if no slot pane is joined.
+func DetachSlotPane(sedgePaneID string) error {
+	if sedgePaneID == "" {
+		return nil
+	}
+	slot, err := findSlotPane(sedgePaneID)
+	if err != nil || slot == "" {
+		return err
+	}
+	name := slotWindowName(slot)
+	args := []string{"break-pane", "-d", "-P", "-F", "#{window_id}", "-s", slot}
+	if name != "" {
+		args = append(args, "-n", name)
+	}
+	out, brErr := exec.Command("tmux", args...).CombinedOutput()
+	if brErr != nil {
+		return fmt.Errorf("break-pane: %w: %s", brErr, strings.TrimSpace(string(out)))
+	}
+	newWinID := strings.TrimSpace(string(out))
+	if newWinID != "" {
+		_, _ = run("set-window-option", "-t", newWinID, "monitor-activity", "on")
+	}
+	return nil
 }
 
 // KillSlotPane kills the slot pane if one exists. Used by the delete flow.

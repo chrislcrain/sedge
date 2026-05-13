@@ -92,6 +92,12 @@ type Model struct {
 	status    string
 	w, h      int
 
+	// lastSeenMtime[wtPath] is the JSONL mtime sedge last considered "seen"
+	// by the user for that worktree. A worktree is marked WtWaiting when its
+	// current JSONL mtime advances past this bookmark. The bookmark is bumped
+	// to the current mtime whenever the worktree is the active slot.
+	lastSeenMtime map[string]time.Time
+
 	mode  mode
 	input textinput.Model
 
@@ -114,10 +120,11 @@ func New() (Model, error) {
 	ti.CharLimit = 256
 	ti.Width = 50
 	m := Model{
-		cfg:       cfg,
-		worktrees: map[string][]project.Worktree{},
-		expanded:  map[string]bool{},
-		input:     ti,
+		cfg:           cfg,
+		worktrees:     map[string][]project.Worktree{},
+		expanded:      map[string]bool{},
+		lastSeenMtime: map[string]time.Time{},
+		input:         ti,
 	}
 	m.rebuild()
 	return m, nil
@@ -183,6 +190,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadAllWorktreesCmd(m.cfg)
 
 	case worktreesMsg:
+		for i := range msg.list {
+			wt := &msg.list[i]
+			seen, hadSeen := m.lastSeenMtime[wt.Path]
+			if !hadSeen {
+				// First time we've laid eyes on this worktree this process —
+				// treat whatever's on disk as already-seen so we don't blink
+				// for stale-but-recent JSONLs left by a prior sedge run.
+				m.lastSeenMtime[wt.Path] = wt.JSONLMtime
+				seen = wt.JSONLMtime
+			}
+			switch wt.State {
+			case project.WtActive:
+				// The user is looking at it — anything in the JSONL is "seen".
+				m.lastSeenMtime[wt.Path] = wt.JSONLMtime
+			case project.WtBackground:
+				if !wt.JSONLMtime.IsZero() && wt.JSONLMtime.After(seen) {
+					wt.State = project.WtWaiting
+				}
+			}
+		}
 		m.worktrees[msg.project] = msg.list
 		m.rebuild()
 		m.clampCursor()
@@ -237,7 +264,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch keyFor(msg) {
 	case actQuit:
-		return m, tea.Quit
+		return m, tea.Sequence(detachSlotCmd(), tea.Quit)
 	case actDown:
 		if m.cursor < len(m.rows)-1 {
 			m.cursor++
@@ -273,6 +300,15 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.pendingShipPrev = nil
 			m.mode = modeConfirmShip
 			return m, previewShipCmd(*r.project, *r.wt)
+		}
+		return m, nil
+	case actAdhocChat:
+		if r, ok := m.currentRow(); ok && r.kind == rowProject {
+			if !tmux.InsideTmux() {
+				m.err = fmt.Errorf("not inside tmux; restart sedge from a non-tmux shell")
+				return m, nil
+			}
+			return m, adhocChatCmd(*r.project, m.cfg)
 		}
 		return m, nil
 	case actAddProject:
@@ -737,7 +773,7 @@ func (m Model) renderRow(r row) string {
 		case project.WtActive:
 			dot = activeStyle.Render("●")
 		case project.WtWaiting:
-			dot = waitingStyle.Render("⚠")
+			dot = waitingStyle.Render("●")
 		case project.WtBackground:
 			dot = backgroundStyle.Render("◐")
 		}
@@ -846,11 +882,13 @@ func loadWorktreesCmd(p project.Project) tea.Cmd {
 		for i := range list {
 			winID, _, _ := tmux.FindWorktreeWindow(list[i].Path)
 			list[i].WindowID = winID
+			list[i].JSONLMtime = agentlog.LatestJSONLMtime(list[i].Path)
+			// Tentative state from tmux/cwd alone; the model post-processes
+			// to upgrade WtBackground → WtWaiting based on the JSONL mtime
+			// bookmark (which lives in the Model so it survives ticks).
 			switch {
 			case list[i].Path == activePath:
 				list[i].State = project.WtActive
-			case winID != "" && tmux.WindowActivity(winID):
-				list[i].State = project.WtWaiting
 			case winID != "":
 				list[i].State = project.WtBackground
 			default:
@@ -946,6 +984,54 @@ func spawnSessionCmd(p project.Project, requestedName, branchInput, wtPathInput 
 			wtBranch = project.BranchName(sessionName)
 		}
 		return spawnIntoSlot(p, project.Worktree{SessionName: sessionName, Path: wtPath, Branch: wtBranch}, cfg)
+	}
+}
+
+// adhocChatCmd spawns (or re-focuses) a claude session against the project's
+// main repo path — no worktree, no branch prompts. If a live tmux window
+// already exists for the repo path it's swapped in as-is so the running
+// conversation isn't disturbed; otherwise a fresh claude is spawned without
+// --continue so it starts clean.
+func adhocChatCmd(p project.Project, cfg project.Config) tea.Cmd {
+	return func() tea.Msg {
+		sessionName := p.ResolvedDefaultBranch()
+		wt := project.Worktree{
+			SessionName: sessionName,
+			Path:        p.Path,
+			Branch:      sessionName,
+		}
+		sedgePane := os.Getenv("TMUX_PANE")
+		if _, paneID, err := tmux.FindWindowForCwd(wt.Path, sedgePane); err == nil && paneID != "" {
+			if err := tmux.SwapInPane(sedgePane, paneID, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
+				return errMsg{err}
+			}
+			return focusedMsg{pane: wt.SessionName, paneID: paneID}
+		}
+		promptFile, err := instructions.Resolve(p.Path, p.Name, wt.SessionName, instructions.DelegationPolicy{
+			MaxParallel: cfg.MaxParallelSubAgents,
+			MaxDepth:    cfg.MaxSubAgentDepth,
+		})
+		if err != nil {
+			return errMsg{err}
+		}
+		agentsJSON, _ := instructions.LoadAgentsJSON()
+		_, newPane, err := tmux.SpawnClaudeWindow(tmux.SpawnClaudeOpts{
+			WorktreeDir:    wt.Path,
+			ProjectPath:    p.Path,
+			PromptFile:     promptFile,
+			SessionName:    wt.SessionName,
+			PermissionMode: cfg.DefaultPermissionMode,
+			Model:          cfg.DefaultModel,
+			AgentsJSON:     agentsJSON,
+			// Resume intentionally false — adhoc chat always starts fresh.
+		})
+		if err != nil {
+			return errMsg{err}
+		}
+		if err := tmux.SwapInPane(sedgePane, newPane, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
+			return errMsg{err}
+		}
+		return spawnedMsg{pane: wt.SessionName, paneID: newPane}
 	}
 }
 
@@ -1140,6 +1226,17 @@ func deleteProjectCmd(p project.Project, wts []project.Worktree) tea.Cmd {
 			return errMsg{err}
 		}
 		return reloadedMsg{cfg: cfg}
+	}
+}
+
+// detachSlotCmd breaks the visible slot pane back to its own background
+// window before sedge exits, so the now-empty sedge tmux window closes itself
+// instead of leaving an orphan claude pane in it. The background claude keeps
+// running and can be swapped back in next time sedge launches.
+func detachSlotCmd() tea.Cmd {
+	return func() tea.Msg {
+		_ = tmux.DetachSlotPane(os.Getenv("TMUX_PANE"))
+		return nil
 	}
 }
 
