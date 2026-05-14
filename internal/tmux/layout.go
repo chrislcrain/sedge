@@ -347,13 +347,13 @@ func DetachSlotPane(sedgePaneID string) error {
 		_, _ = run("set-window-option", "-t", newWinID, "monitor-activity", "on")
 	}
 	// Move any remaining non-sedge panes into the same background window so
-	// they survive but stop crowding sedge.
+	// they survive but stop crowding sedge. Target slots[0] (the just-broken
+	// pane, now in the new window) directly rather than the window id, since
+	// `join-pane -t` expects a pane spec.
 	for _, p := range slots[1:] {
-		if newWinID != "" {
-			if _, jerr := run("join-pane", "-d", "-h", "-s", p, "-t", newWinID); jerr != nil {
-				_, _ = run("kill-pane", "-t", p)
-			}
-		} else {
+		if _, jerr := run("join-pane", "-d", "-h", "-s", p, "-t", slots[0]); jerr != nil {
+			// Last-resort fallback: if we somehow can't park it next to the
+			// broken-out pane, kill it rather than leave it crushing sedge.
 			_, _ = run("kill-pane", "-t", p)
 		}
 	}
