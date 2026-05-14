@@ -884,8 +884,17 @@ func loadWorktreesCmd(p project.Project) tea.Cmd {
 			winID, _, _ := tmux.FindWorktreeWindow(list[i].Path)
 			list[i].WindowID = winID
 			list[i].JSONLMtime = agentlog.LatestJSONLMtime(list[i].Path)
+			// Also fold in tmux's per-window last-activity timestamp so that
+			// non-claude tools sharing the background window (a running test
+			// suite, a tail -f, an `o`-opened shell, etc.) also flash the
+			// waiting indicator, not just claude turns/tool events.
+			if winID != "" {
+				if wa := tmux.WindowActivity(winID); wa.After(list[i].JSONLMtime) {
+					list[i].JSONLMtime = wa
+				}
+			}
 			// Tentative state from tmux/cwd alone; the model post-processes
-			// to upgrade WtBackground → WtWaiting based on the JSONL mtime
+			// to upgrade WtBackground → WtWaiting based on the activity-mtime
 			// bookmark (which lives in the Model so it survives ticks).
 			switch {
 			case list[i].Path == activePath:
