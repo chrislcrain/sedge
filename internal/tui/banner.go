@@ -100,6 +100,7 @@ var helpEntries = [][2]string{
 	{"n  ", "add project"},
 	{"o  ", "shell @ project / worktree"},
 	{"A  ", "adhoc chat @ project"},
+	{"W  ", "orchestrate (plan multi-pane work)"},
 	{"D  ", "delete (recycle)"},
 	{"P  ", "push + open PR"},
 	{"X  ", "kill all · quit"},

@@ -289,6 +289,15 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, adhocChatCmd(*r.project, m.cfg)
 		}
 		return m, nil
+	case actOrchestrate:
+		if r, ok := m.currentRow(); ok && r.kind == rowWorktree {
+			if !tmux.InsideTmux() {
+				m.err = fmt.Errorf("not inside tmux; restart sedge from a non-tmux shell")
+				return m, nil
+			}
+			return m, orchestratePlannerCmd(*r.project, *r.wt, m.cfg)
+		}
+		return m, nil
 	case actAddProject:
 		m.input.Reset()
 		m.input.Placeholder = "absolute path to a git-init'd directory"
@@ -978,6 +987,47 @@ func spawnSessionCmd(p project.Project, requestedName, branchInput, wtPathInput 
 }
 
 // adhocChatCmd spawns (or re-focuses) a claude session against the project's
+// orchestratePlannerCmd implements `W` on a worktree row: park the
+// worktree's current slot subtree in its own background window and spawn
+// a fresh claude pane configured as an orchestration planner (system
+// prompt instructs it to interview the user and write a plan.json). The
+// user can later swap the worktree back in via Enter to restore the
+// original claude pane(s).
+func orchestratePlannerCmd(p project.Project, wt project.Worktree, cfg project.Config) tea.Cmd {
+	return func() tea.Msg {
+		sedgePane := os.Getenv("TMUX_PANE")
+		if sedgePane == "" {
+			return errMsg{fmt.Errorf("TMUX_PANE not set; cannot orchestrate")}
+		}
+		prompt, err := instructions.ResolvePlannerPrompt()
+		if err != nil {
+			return errMsg{err}
+		}
+		// If the worktree isn't currently the active slot, bring it in
+		// first so the planner ends up where the user expects (right of
+		// sedge). SwapInPane is a no-op when it's already active.
+		if winID, paneID, err := tmux.FindWorktreeWindow(wt.Path); err == nil && paneID != "" {
+			_ = winID
+			if err := tmux.SwapInPane(sedgePane, paneID, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
+				return errMsg{err}
+			}
+		}
+		newPane, err := tmux.SpawnOrchestrationPlanner(tmux.SpawnPlannerOpts{
+			SedgePaneID:    sedgePane,
+			WorktreeDir:    wt.Path,
+			ProjectPath:    p.Path,
+			PromptFile:     prompt,
+			SessionName:    wt.SessionName + "-orchestrate",
+			PermissionMode: cfg.DefaultPermissionMode,
+			Model:          cfg.DefaultModel,
+		})
+		if err != nil {
+			return errMsg{err}
+		}
+		return spawnedMsg{pane: wt.SessionName + " (planner)", paneID: newPane}
+	}
+}
+
 // main repo path — no worktree, no branch prompts. If a live tmux window
 // already exists for the repo path it's swapped in as-is so the running
 // conversation isn't disturbed; otherwise a fresh claude is spawned without

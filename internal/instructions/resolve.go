@@ -107,6 +107,28 @@ func (p DelegationPolicy) preamble() string {
 	return b.String()
 }
 
+// ResolvePlannerPrompt writes the embedded orchestration-planner system
+// prompt to the prompt cache and returns its absolute path. Used by the
+// `W` (orchestrate) flow so the planner claude is started with
+// --append-system-prompt-file pointing at our planner instructions.
+//
+// Idempotent: re-writes each call so any embedded-prompt updates land
+// without needing to clear caches.
+func ResolvePlannerPrompt() (string, error) {
+	cacheDir, err := xdg.PromptCacheDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		return "", err
+	}
+	out := filepath.Join(cacheDir, "orchestration-planner.md")
+	if err := os.WriteFile(out, []byte(OrchestrationPlannerMD), 0o644); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
 // WriteDefaultGlobalIfMissing creates ~/.sedge/AGENTS.md from the embedded
 // default if it doesn't already exist. Idempotent.
 func WriteDefaultGlobalIfMissing() error {

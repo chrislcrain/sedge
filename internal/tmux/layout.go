@@ -253,6 +253,61 @@ func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct
 	return err
 }
 
+// SpawnPlannerOpts is the configuration for SpawnOrchestrationPlanner.
+type SpawnPlannerOpts struct {
+	SedgePaneID    string // sedge's own pane (where TMUX_PANE points)
+	WorktreeDir    string // the worktree the planner will run in
+	ProjectPath    string // passed to claude --add-dir
+	PromptFile     string // planner system prompt path
+	SessionName    string // claude -n value, e.g. "<wt>-orchestrate"
+	PermissionMode string // claude --permission-mode value (usually "default")
+	Model          string // optional claude --model override
+}
+
+// SpawnOrchestrationPlanner replaces the currently-visible slot subtree
+// with a fresh claude pane configured as an orchestration planner. The
+// previous slot is broken out to its own background window so its
+// conversation/processes are preserved for later swap-back.
+//
+// Returns the new planner pane's id.
+func SpawnOrchestrationPlanner(opts SpawnPlannerOpts) (string, error) {
+	if opts.SedgePaneID == "" {
+		return "", errNoSedgePane
+	}
+	// 1) Park the current slot (if any) in its own background window so
+	//    the user's running claude isn't lost — they can swap back to
+	//    the worktree row later to bring it back.
+	if err := DetachSlotPane(opts.SedgePaneID); err != nil {
+		return "", err
+	}
+	// 2) Split a new pane to the right of sedge running a planner-mode
+	//    claude. Use -P -F to capture the new pane id.
+	args := []string{
+		"split-window", "-h",
+		"-t", opts.SedgePaneID,
+		"-c", opts.WorktreeDir,
+		"-P", "-F", "#{pane_id}",
+		"--",
+	}
+	args = append(args, buildClaudeCmdline(SpawnClaudeOpts{
+		WorktreeDir:    opts.WorktreeDir,
+		ProjectPath:    opts.ProjectPath,
+		PromptFile:     opts.PromptFile,
+		SessionName:    opts.SessionName,
+		PermissionMode: opts.PermissionMode,
+		Model:          opts.Model,
+	})...)
+	out, err := exec.Command("tmux", args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("split-window (planner): %w", err)
+	}
+	paneID := strings.TrimSpace(string(out))
+	if paneID != "" {
+		_, _ = run("select-pane", "-t", paneID)
+	}
+	return paneID, nil
+}
+
 // paneIDsInWindow returns every pane in the given window, in tmux list
 // order. Used to scoop up a worktree's full multi-pane slot subtree.
 func paneIDsInWindow(windowID string) ([]string, error) {
