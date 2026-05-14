@@ -93,20 +93,11 @@ type Model struct {
 	status    string
 	w, h      int
 
-	// lastSeenMtime[wtPath] is the activity time sedge last considered "seen"
+	// lastSeenMtime[wtPath] is the JSONL mtime sedge last considered "seen"
 	// by the user for that worktree. A worktree is marked WtWaiting when its
-	// current activity (claude JSONL mtime ∪ tmux window_activity) advances
-	// past this bookmark. The bookmark is bumped whenever the worktree is
-	// active or when sedge initiates an activation (eager-bump prevents the
-	// "switch away and back briefly flashes yellow" race).
+	// current JSONL mtime advances past this bookmark. The bookmark is bumped
+	// to the current mtime whenever the worktree is the active slot.
 	lastSeenMtime map[string]time.Time
-
-	// activeWtPath is the worktree whose tmux window sedge last switched the
-	// client to. Each worktree owns its own tmux window now, so "active"
-	// means "most recently focused via sedge" rather than "joined next to
-	// sedge's pane". Empty when sedge has not activated anything yet this
-	// session.
-	activeWtPath string
 
 	mode  mode
 	input textinput.Model
@@ -149,12 +140,10 @@ type (
 	spawnedMsg struct {
 		pane    string
 		paneID  string // tmux pane id for re-focusing post-render
-		wtPath  string // worktree path that just became active
 	}
 	focusedMsg struct {
 		pane   string
 		paneID string
-		wtPath string
 	}
 	deletedMsg struct{ session string }
 	errMsg     struct{ err error }
@@ -162,7 +151,7 @@ type (
 )
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadAllWorktreesCmd(m.cfg, m.activeWtPath), tickCmd())
+	return tea.Batch(loadAllWorktreesCmd(m.cfg), tickCmd())
 }
 
 type tickMsg struct{}
@@ -199,7 +188,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cfg = msg.cfg
 		m.rebuild()
 		m.clampCursor()
-		return m, loadAllWorktreesCmd(m.cfg, m.activeWtPath)
+		return m, loadAllWorktreesCmd(m.cfg)
 
 	case worktreesMsg:
 		for i := range msg.list {
@@ -228,26 +217,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spawnedMsg:
-		m.markActive(msg.wtPath)
 		m.status = "spawned " + msg.pane
 		return m, tea.Batch(
-			loadAllWorktreesCmd(m.cfg, m.activeWtPath),
+			loadAllWorktreesCmd(m.cfg),
 			refocusPaneCmd(msg.paneID),
 			clearStatusAfter(3*time.Second),
 		)
 
 	case focusedMsg:
-		m.markActive(msg.wtPath)
 		m.status = "active: " + msg.pane
 		return m, tea.Batch(
-			loadAllWorktreesCmd(m.cfg, m.activeWtPath),
+			loadAllWorktreesCmd(m.cfg),
 			refocusPaneCmd(msg.paneID),
 			clearStatusAfter(2*time.Second),
 		)
 
 	case deletedMsg:
 		m.status = "recycled " + msg.session
-		return m, tea.Batch(loadAllWorktreesCmd(m.cfg, m.activeWtPath), clearStatusAfter(3*time.Second))
+		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), clearStatusAfter(3*time.Second))
 
 	case errMsg:
 		m.err = msg.err
@@ -260,7 +247,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statusMsg:
 		m.status = string(msg)
-		return m, tea.Batch(loadAllWorktreesCmd(m.cfg, m.activeWtPath), clearStatusAfter(4*time.Second))
+		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), clearStatusAfter(4*time.Second))
 
 	case shipPreviewMsg:
 		if m.mode == modeConfirmShip {
@@ -270,7 +257,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		return m, tea.Batch(loadAllWorktreesCmd(m.cfg, m.activeWtPath), tickCmd())
+		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), tickCmd())
 	}
 	return m, nil
 }
@@ -278,7 +265,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch keyFor(msg) {
 	case actQuit:
-		return m, tea.Quit
+		return m, tea.Sequence(detachSlotCmd(), tea.Quit)
 	case actDown:
 		if m.cursor < len(m.rows)-1 {
 			m.cursor++
@@ -293,7 +280,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, editConfigCmd()
 	case actReload:
 		reloadNameplate()
-		return m, tea.Batch(reloadCfgCmd(), loadAllWorktreesCmd(m.cfg, m.activeWtPath))
+		return m, tea.Batch(reloadCfgCmd(), loadAllWorktreesCmd(m.cfg))
 	case actDelete:
 		if r, ok := m.currentRow(); ok {
 			switch r.kind {
@@ -332,15 +319,10 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = modePromptProject
 		return m, textinput.Blink
 	case actOpenCode:
-		if r, ok := m.currentRow(); ok {
-			switch r.kind {
-			case rowProject:
-				return m, openShellAtCmd(r.project.Path)
-			case rowWorktree:
-				return m, openCodePaneCmd(r.wt.Path)
-			}
+		if r, ok := m.currentRow(); ok && r.kind == rowProject {
+			return m, openShellAtCmd(r.project.Path)
 		}
-		return m, nil
+		return m, openCodePaneCmd()
 	case actCleanExit:
 		m.mode = modeConfirmCleanExit
 		return m, nil
@@ -832,23 +814,6 @@ func (m *Model) rebuild() {
 	m.rows = rows
 }
 
-// markActive records the worktree sedge just switched to and eagerly bumps
-// its activity bookmark to "now". This prevents the brief yellow-flash race
-// where switching to another worktree and back would catch the just-vacated
-// worktree as WtBackground with new tmux activity from the switch itself.
-func (m *Model) markActive(wtPath string) {
-	if wtPath == "" {
-		return
-	}
-	now := time.Now()
-	if m.activeWtPath != "" && m.activeWtPath != wtPath {
-		// Absorb any in-flight activity on the now-deactivated worktree.
-		m.lastSeenMtime[m.activeWtPath] = now
-	}
-	m.activeWtPath = wtPath
-	m.lastSeenMtime[wtPath] = now
-}
-
 func (m *Model) clampCursor() {
 	if m.cursor >= len(m.rows) {
 		m.cursor = len(m.rows) - 1
@@ -876,7 +841,7 @@ func (m *Model) activateRow() tea.Cmd {
 		m.rebuild()
 		m.clampCursor()
 		if m.expanded[r.project.Name] {
-			return loadWorktreesCmd(*r.project, m.activeWtPath)
+			return loadWorktreesCmd(*r.project)
 		}
 		return nil
 	case rowNewSession:
@@ -908,18 +873,19 @@ func (m *Model) activateRow() tea.Cmd {
 
 // ---- commands ----
 
-func loadWorktreesCmd(p project.Project, activeWtPath string) tea.Cmd {
+func loadWorktreesCmd(p project.Project) tea.Cmd {
 	return func() tea.Msg {
 		list, err := project.ListWorktrees(p.Path)
 		if err != nil {
 			return errMsg{err}
 		}
+		activePath, _ := tmux.ActiveSlotPath(os.Getenv("TMUX_PANE"))
 		for i := range list {
 			winID, _, _ := tmux.FindWorktreeWindow(list[i].Path)
 			list[i].WindowID = winID
 			list[i].JSONLMtime = agentlog.LatestJSONLMtime(list[i].Path)
 			// Also fold in tmux's per-window last-activity timestamp so that
-			// non-claude tools sharing the worktree's window (a running test
+			// non-claude tools sharing the background window (a running test
 			// suite, a tail -f, an `o`-opened shell, etc.) also flash the
 			// waiting indicator, not just claude turns/tool events.
 			if winID != "" {
@@ -931,7 +897,7 @@ func loadWorktreesCmd(p project.Project, activeWtPath string) tea.Cmd {
 			// to upgrade WtBackground → WtWaiting based on the activity-mtime
 			// bookmark (which lives in the Model so it survives ticks).
 			switch {
-			case activeWtPath != "" && list[i].Path == activeWtPath && winID != "":
+			case list[i].Path == activePath:
 				list[i].State = project.WtActive
 			case winID != "":
 				list[i].State = project.WtBackground
@@ -956,10 +922,10 @@ func loadWorktreesCmd(p project.Project, activeWtPath string) tea.Cmd {
 	}
 }
 
-func loadAllWorktreesCmd(cfg project.Config, activeWtPath string) tea.Cmd {
+func loadAllWorktreesCmd(cfg project.Config) tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(cfg.Projects))
 	for _, p := range cfg.Projects {
-		cmds = append(cmds, loadWorktreesCmd(p, activeWtPath))
+		cmds = append(cmds, loadWorktreesCmd(p))
 	}
 	return tea.Batch(cmds...)
 }
@@ -1027,15 +993,15 @@ func spawnSessionCmd(p project.Project, requestedName, branchInput, wtPathInput 
 		} else if wtBranch == "" {
 			wtBranch = project.BranchName(sessionName)
 		}
-		return activateWorktree(p, project.Worktree{SessionName: sessionName, Path: wtPath, Branch: wtBranch}, cfg)
+		return spawnIntoSlot(p, project.Worktree{SessionName: sessionName, Path: wtPath, Branch: wtBranch}, cfg)
 	}
 }
 
 // adhocChatCmd spawns (or re-focuses) a claude session against the project's
 // main repo path — no worktree, no branch prompts. If a live tmux window
-// already exists for the repo path the user is switched to it as-is so the
-// running conversation isn't disturbed; otherwise a fresh claude is spawned
-// in its own window without --continue so it starts clean.
+// already exists for the repo path it's swapped in as-is so the running
+// conversation isn't disturbed; otherwise a fresh claude is spawned without
+// --continue so it starts clean.
 func adhocChatCmd(p project.Project, cfg project.Config) tea.Cmd {
 	return func() tea.Msg {
 		sessionName := p.ResolvedDefaultBranch()
@@ -1045,11 +1011,11 @@ func adhocChatCmd(p project.Project, cfg project.Config) tea.Cmd {
 			Branch:      sessionName,
 		}
 		sedgePane := os.Getenv("TMUX_PANE")
-		if winID, paneID, err := tmux.FindWindowForCwd(wt.Path, sedgePane); err == nil && winID != "" {
-			if err := tmux.SelectWindow(winID); err != nil {
+		if _, paneID, err := tmux.FindWindowForCwd(wt.Path, sedgePane); err == nil && paneID != "" {
+			if err := tmux.SwapInPane(sedgePane, paneID, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
 				return errMsg{err}
 			}
-			return focusedMsg{pane: wt.SessionName, paneID: paneID, wtPath: wt.Path}
+			return focusedMsg{pane: wt.SessionName, paneID: paneID}
 		}
 		promptFile, err := instructions.Resolve(p.Path, p.Name, wt.SessionName, instructions.DelegationPolicy{
 			MaxParallel: cfg.MaxParallelSubAgents,
@@ -1059,7 +1025,7 @@ func adhocChatCmd(p project.Project, cfg project.Config) tea.Cmd {
 			return errMsg{err}
 		}
 		agentsJSON, _ := instructions.LoadAgentsJSON()
-		newWin, newPane, err := tmux.SpawnClaudeWindow(tmux.SpawnClaudeOpts{
+		_, newPane, err := tmux.SpawnClaudeWindow(tmux.SpawnClaudeOpts{
 			WorktreeDir:    wt.Path,
 			ProjectPath:    p.Path,
 			PromptFile:     promptFile,
@@ -1072,10 +1038,10 @@ func adhocChatCmd(p project.Project, cfg project.Config) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		if err := tmux.SelectWindow(newWin); err != nil {
+		if err := tmux.SwapInPane(sedgePane, newPane, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
 			return errMsg{err}
 		}
-		return spawnedMsg{pane: wt.SessionName, paneID: newPane, wtPath: wt.Path}
+		return spawnedMsg{pane: wt.SessionName, paneID: newPane}
 	}
 }
 
@@ -1114,29 +1080,36 @@ type statusMsg string
 
 func swapToWorktreeCmd(p project.Project, wt project.Worktree, cfg project.Config) tea.Cmd {
 	return func() tea.Msg {
-		return activateWorktree(p, wt, cfg)
+		return spawnIntoSlot(p, wt, cfg)
 	}
 }
 
-// activateWorktree switches the tmux client to the worktree's dedicated
-// window. If no window exists yet a fresh claude is spawned in a new
-// background window (with --continue if there's prior history) and then
-// switched to. Each worktree owns its own tmux window — sedge stays in its
-// own — so activating is a window switch rather than a pane swap.
-func activateWorktree(p project.Project, wt project.Worktree, cfg project.Config) tea.Msg {
+// spawnIntoSlot brings a claude session into the visible slot next to sedge.
+//
+// If a tmux window already exists for the worktree (the claude is alive in
+// the background), the existing pane is swapped into the slot — preserving
+// its conversation state and any in-flight work. Otherwise a new claude is
+// spawned in a background window (with --continue if there's prior history),
+// then swapped in.
+//
+// The previous slot pane, if any, is broken out into its own background
+// window so the claude running there keeps going.
+func spawnIntoSlot(p project.Project, wt project.Worktree, cfg project.Config) tea.Msg {
+	sedgePane := os.Getenv("TMUX_PANE")
+
 	// Try to find an existing window for this worktree.
-	winID, paneID, err := tmux.FindWorktreeWindow(wt.Path)
+	_, paneID, err := tmux.FindWorktreeWindow(wt.Path)
 	if err != nil {
 		return errMsg{err}
 	}
-	if winID != "" {
-		if err := tmux.SelectWindow(winID); err != nil {
+	if paneID != "" {
+		if err := tmux.SwapInPane(sedgePane, paneID, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
 			return errMsg{err}
 		}
-		return focusedMsg{pane: wt.SessionName, paneID: paneID, wtPath: wt.Path}
+		return focusedMsg{pane: wt.SessionName}
 	}
 
-	// No live window — spawn one in the background, then switch to it.
+	// No live window — spawn one in the background, then swap it in.
 	promptFile, err := instructions.Resolve(p.Path, p.Name, wt.SessionName, instructions.DelegationPolicy{
 		MaxParallel: cfg.MaxParallelSubAgents,
 		MaxDepth:    cfg.MaxSubAgentDepth,
@@ -1145,7 +1118,7 @@ func activateWorktree(p project.Project, wt project.Worktree, cfg project.Config
 		return errMsg{err}
 	}
 	agentsJSON, _ := instructions.LoadAgentsJSON()
-	newWin, newPane, err := tmux.SpawnClaudeWindow(tmux.SpawnClaudeOpts{
+	_, newPane, err := tmux.SpawnClaudeWindow(tmux.SpawnClaudeOpts{
 		WorktreeDir:    wt.Path,
 		ProjectPath:    p.Path,
 		PromptFile:     promptFile,
@@ -1158,15 +1131,36 @@ func activateWorktree(p project.Project, wt project.Worktree, cfg project.Config
 	if err != nil {
 		return errMsg{err}
 	}
-	if err := tmux.SelectWindow(newWin); err != nil {
+	if err := tmux.SwapInPane(sedgePane, newPane, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
 		return errMsg{err}
 	}
-	return spawnedMsg{pane: wt.SessionName, paneID: newPane, wtPath: wt.Path}
+	return spawnedMsg{pane: wt.SessionName, paneID: newPane}
+}
+
+// nameplateMargin is the spare columns left around the widest nameplate row
+// so the project tree has some breathing room next to the banner.
+const nameplateMargin = 4
+
+// sedgePaneCols returns the effective width (in columns) the sedge pane
+// should occupy: at least wide enough for the configured nameplate plus a
+// small margin, but never narrower than the user-configured value.
+func sedgePaneCols(cfg project.Config) int {
+	n := NameplateWidth() + nameplateMargin
+	if cfg.SedgeWidthCols > n {
+		return cfg.SedgeWidthCols
+	}
+	return n
 }
 
 func deleteWorktreeCmd(p project.Project, wt project.Worktree) tea.Cmd {
 	return func() tea.Msg {
-		if winID, _, err := tmux.FindWorktreeWindow(wt.Path); err == nil && winID != "" {
+		// Kill whichever tmux container is holding this worktree's claude:
+		// the slot pane (if it's active) or the background window (if it's
+		// alive in the background).
+		sedgePane := os.Getenv("TMUX_PANE")
+		if activePath, _ := tmux.ActiveSlotPath(sedgePane); activePath == wt.Path {
+			_ = tmux.KillSlotPane(sedgePane)
+		} else if winID, _, err := tmux.FindWorktreeWindow(wt.Path); err == nil && winID != "" {
 			_ = tmux.KillWindow(winID)
 		}
 		if err := project.Recycle(p, wt); err != nil {
@@ -1222,8 +1216,11 @@ func refocusPaneCmd(paneID string) tea.Cmd {
 // ~/.sedge/config.toml. The on-disk repo at p.Path is never touched.
 func deleteProjectCmd(p project.Project, wts []project.Worktree) tea.Cmd {
 	return func() tea.Msg {
+		sedgePane := os.Getenv("TMUX_PANE")
 		for _, wt := range wts {
-			if winID, _, err := tmux.FindWorktreeWindow(wt.Path); err == nil && winID != "" {
+			if activePath, _ := tmux.ActiveSlotPath(sedgePane); activePath == wt.Path {
+				_ = tmux.KillSlotPane(sedgePane)
+			} else if winID, _, err := tmux.FindWorktreeWindow(wt.Path); err == nil && winID != "" {
 				_ = tmux.KillWindow(winID)
 			}
 			_ = project.Recycle(p, wt)
@@ -1242,9 +1239,22 @@ func deleteProjectCmd(p project.Project, wts []project.Worktree) tea.Cmd {
 	}
 }
 
+// detachSlotCmd breaks the visible slot pane back to its own background
+// window before sedge exits, so the now-empty sedge tmux window closes itself
+// instead of leaving an orphan claude pane in it. The background claude keeps
+// running and can be swapped back in next time sedge launches.
+func detachSlotCmd() tea.Cmd {
+	return func() tea.Msg {
+		_ = tmux.DetachSlotPane(os.Getenv("TMUX_PANE"))
+		return nil
+	}
+}
+
 func cleanExitCmd(worktreesRoot string) tea.Cmd {
 	return func() tea.Msg {
 		_, _ = tmux.KillAllWorktreeWindows(expandUser(worktreesRoot))
+		// Also kill the slot pane if any (the visible one).
+		_ = tmux.KillSlotPane(os.Getenv("TMUX_PANE"))
 		return nil
 	}
 }
@@ -1258,7 +1268,7 @@ func viewSubAgentCmd(wtPath, description string) tea.Cmd {
 		if path == "" {
 			return errMsg{fmt.Errorf("no agent file found for %q yet (claude may not have flushed it)", description)}
 		}
-		if err := tmux.OpenSubAgentViewer(wtPath, path); err != nil {
+		if err := tmux.OpenSubAgentViewer(os.Getenv("TMUX_PANE"), path); err != nil {
 			return errMsg{err}
 		}
 		return clearStat{}
@@ -1274,9 +1284,9 @@ func openShellAtCmd(cwd string) tea.Cmd {
 	}
 }
 
-func openCodePaneCmd(wtPath string) tea.Cmd {
+func openCodePaneCmd() tea.Cmd {
 	return func() tea.Msg {
-		if err := tmux.OpenCodePane(wtPath); err != nil {
+		if err := tmux.OpenCodePane(os.Getenv("TMUX_PANE")); err != nil {
 			return errMsg{err}
 		}
 		return clearStat{}
