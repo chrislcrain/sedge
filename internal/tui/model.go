@@ -814,6 +814,25 @@ func (m *Model) rebuild() {
 	m.rows = rows
 }
 
+// bumpSeenForActiveAnd advances the activity bookmark to "now" for both the
+// worktree the user just picked (incoming) and whatever was the active slot
+// at the moment of the click (outgoing). Without this, a tmux #{window_activity}
+// tick fired by the join-pane/break-pane churn itself can make the just-vacated
+// worktree flash yellow on the very next refresh.
+func (m *Model) bumpSeenForActiveAnd(targetPath string) {
+	now := time.Now()
+	for _, wts := range m.worktrees {
+		for i := range wts {
+			if wts[i].State == project.WtActive {
+				m.lastSeenMtime[wts[i].Path] = now
+			}
+		}
+	}
+	if targetPath != "" {
+		m.lastSeenMtime[targetPath] = now
+	}
+}
+
 func (m *Model) clampCursor() {
 	if m.cursor >= len(m.rows) {
 		m.cursor = len(m.rows) - 1
@@ -860,6 +879,10 @@ func (m *Model) activateRow() tea.Cmd {
 			m.err = fmt.Errorf("not inside tmux; restart sedge from a non-tmux shell")
 			return nil
 		}
+		// Eager-bump bookmarks for both the worktree we're leaving and the
+		// one we're entering, so the brief window of swap-induced tmux
+		// activity doesn't trip a yellow waiting flash on either.
+		m.bumpSeenForActiveAnd(r.wt.Path)
 		return swapToWorktreeCmd(*r.project, *r.wt, m.cfg)
 	case rowSubAgent:
 		if !tmux.InsideTmux() {
