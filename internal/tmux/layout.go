@@ -146,20 +146,24 @@ func FindWindowForCwd(cwd, excludePaneID string) (windowID, paneID string, err e
 }
 
 // SwapInPane makes the worktree containing targetPaneID the visible slot
-// next to sedge. sedgeCols is the absolute number of columns sedge keeps;
-// the joined panes share the rest of the window. If sedgeCols <= 0 a
-// percentage fallback is used.
+// next to sedge.
 //
-// Algorithm:
-//  1. If sedgePaneID and targetPaneID are already in the same window, just
-//     focus the target.
-//  2. Otherwise, break the current slot subtree back to its own background
-//     window so the processes inside keep running.
-//  3. Bring EVERY pane from the target worktree's window into sedge's
-//     window. The first one is sized so sedge ends up at sedgeCols columns;
-//     additional panes (user-added shells, sub-agent viewers, etc.) are
-//     stacked next to it preserving the multi-pane slot per worktree.
-//  4. Focus the newly-joined primary pane.
+// Key property: when a slot already exists, the swap is performed via
+// `tmux swap-pane` exchanges — one per matched slot/target pair. swap-pane
+// preserves each window's layout, so sedge's own pane never resizes
+// (no flicker, no bubbletea re-flow). Only on the very first activation
+// (no slot yet) does sedge shrink, and only once.
+//
+// Asymmetric counts:
+//   - target has MORE panes than slot: the extras are join-paned into
+//     sedge's window next to the newly-arrived primary, growing the slot
+//     subtree without touching sedge's pane.
+//   - slot has MORE panes than target: the extras are pushed into the
+//     window holding the old primary (which after the swap is the OLD
+//     worktree's background home), again without touching sedge's pane.
+//
+// sedgeCols / fallbackSlotPct are only consulted on the no-slot-yet path
+// where a fresh join-pane has to size the initial slot.
 func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct int) error {
 	if sedgePaneID == "" {
 		return fmt.Errorf("sedge pane id unknown (TMUX_PANE not set)")
@@ -177,8 +181,6 @@ func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct
 		return err
 	}
 
-	// Resolve every pane sharing the target's window — these are the
-	// worktree's full slot subtree (claude plus any user splits).
 	targetWin, err := paneWindow(targetPaneID)
 	if err != nil {
 		return err
@@ -190,47 +192,63 @@ func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct
 	if len(targetPanes) == 0 {
 		return fmt.Errorf("target window %q has no panes", targetWin)
 	}
-	// Put the explicitly requested pane first so it lands in the primary
-	// slot position and is the one we focus at the end.
+	// The explicitly-requested pane goes first so it lands where the
+	// primary slot pane was and ends up focused.
 	targetPanes = movePaneFirst(targetPanes, targetPaneID)
 
-	// Capture the user's current sedge pane width BEFORE detaching the slot
-	// so we can preserve manual resizes across swaps. Only meaningful when a
-	// slot pane is currently sharing the window with sedge — otherwise sedge
-	// already fills the window and the captured width is the full width.
-	slot, err := findSlotPane(sedgePaneID)
+	slotPanes, err := findAllSlotPanes(sedgePaneID)
 	if err != nil {
 		return err
 	}
-	preservedCols := 0
-	if slot != "" {
-		preservedCols = paneCols(sedgePaneID)
-	}
 
-	if err := DetachSlotPane(sedgePaneID); err != nil {
+	if len(slotPanes) == 0 {
+		// First activation in this sedge session — sedge is alone in
+		// its window and has to give up some columns to the joined
+		// pane. This is the one unavoidable reflow.
+		sizeArg := computeJoinSize(sedgePaneID, sedgeCols, fallbackSlotPct)
+		if _, err := run("join-pane", "-h", "-l", sizeArg, "-s", targetPanes[0], "-t", sedgePaneID); err != nil {
+			return err
+		}
+		for _, p := range targetPanes[1:] {
+			_, _ = run("join-pane", "-h", "-s", p, "-t", targetPanes[0])
+		}
+		_, err = run("select-pane", "-t", targetPanes[0])
 		return err
 	}
 
-	// If we captured a user-set width, honour it; only fall back to the
-	// configured/computed sedgeCols when we don't have one (first swap).
-	desiredSedgeCols := sedgeCols
-	if preservedCols > 0 {
-		desiredSedgeCols = preservedCols
+	// Pair up slot panes with target panes and swap them position-for-
+	// position. swap-pane leaves each window's layout untouched — sedge's
+	// pane width is preserved exactly, no flicker.
+	n := len(slotPanes)
+	if len(targetPanes) < n {
+		n = len(targetPanes)
 	}
-	sizeArg := computeJoinSize(sedgePaneID, desiredSedgeCols, fallbackSlotPct)
-	if _, err := run("join-pane", "-h", "-l", sizeArg, "-s", targetPanes[0], "-t", sedgePaneID); err != nil {
-		return err
-	}
-	// Bring any extra panes the worktree carried (shells, viewers, manual
-	// splits) into sedge's window too, parking each next to the primary
-	// pane. tmux will subdivide that region; best-effort on layout.
-	for _, p := range targetPanes[1:] {
-		if _, jerr := run("join-pane", "-h", "-s", p, "-t", targetPanes[0]); jerr != nil {
-			// If a particular pane refuses to join, leave it in its
-			// source window rather than losing the process.
-			continue
+	for i := 0; i < n; i++ {
+		if _, err := run("swap-pane", "-s", slotPanes[i], "-t", targetPanes[i]); err != nil {
+			return err
 		}
 	}
+
+	// After the swap loop:
+	//   sedge's window has the matched target panes (targetPanes[0..n-1])
+	//   in the original slot positions, plus any leftover slot panes
+	//   (slotPanes[n..]).
+	//   The former-target window now holds the matched slot panes
+	//   (slotPanes[0..n-1]) plus any leftover target panes (targetPanes[n..]).
+
+	// Target had MORE panes than slot — pull the leftovers into sedge's
+	// window, attaching next to the primary so sedge's pane stays put.
+	for i := n; i < len(targetPanes); i++ {
+		_, _ = run("join-pane", "-h", "-s", targetPanes[i], "-t", targetPanes[0])
+	}
+
+	// Slot had MORE panes than target — push the leftovers into the
+	// former-target window (which is now the OLD worktree's home) so
+	// the old processes keep running together.
+	for i := n; i < len(slotPanes); i++ {
+		_, _ = run("join-pane", "-h", "-s", slotPanes[i], "-t", slotPanes[0])
+	}
+
 	_, err = run("select-pane", "-t", targetPanes[0])
 	return err
 }
