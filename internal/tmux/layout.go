@@ -292,19 +292,23 @@ func FocusPane(paneID string) error {
 	return err
 }
 
-// DetachSlotPane breaks the current slot pane (if any) back to its own
-// background tmux window so the process inside it keeps running while no
-// longer sharing the sedge window. No-op if no slot pane is joined.
+// DetachSlotPane breaks every non-sedge pane in sedge's window back to a
+// single background tmux window so the processes inside keep running while no
+// longer sharing the sedge window. No-op if sedge is alone in its window.
+//
+// All non-sedge panes are evacuated — not just the "primary" slot — so that
+// user-opened extras (a shell via `o`, a sub-agent viewer split, etc.) don't
+// linger in the sedge window and squash sedge to a sliver on the next swap.
 func DetachSlotPane(sedgePaneID string) error {
 	if sedgePaneID == "" {
 		return nil
 	}
-	slot, err := findSlotPane(sedgePaneID)
-	if err != nil || slot == "" {
+	slots, err := findAllSlotPanes(sedgePaneID)
+	if err != nil || len(slots) == 0 {
 		return err
 	}
-	name := slotWindowName(slot)
-	args := []string{"break-pane", "-d", "-P", "-F", "#{window_id}", "-s", slot}
+	name := slotWindowName(slots[0])
+	args := []string{"break-pane", "-d", "-P", "-F", "#{window_id}", "-s", slots[0]}
 	if name != "" {
 		args = append(args, "-n", name)
 	}
@@ -315,6 +319,17 @@ func DetachSlotPane(sedgePaneID string) error {
 	newWinID := strings.TrimSpace(string(out))
 	if newWinID != "" {
 		_, _ = run("set-window-option", "-t", newWinID, "monitor-activity", "on")
+	}
+	// Move any remaining non-sedge panes into the same background window so
+	// they survive but stop crowding sedge.
+	for _, p := range slots[1:] {
+		if newWinID != "" {
+			if _, jerr := run("join-pane", "-d", "-h", "-s", p, "-t", newWinID); jerr != nil {
+				_, _ = run("kill-pane", "-t", p)
+			}
+		} else {
+			_, _ = run("kill-pane", "-t", p)
+		}
 	}
 	return nil
 }
@@ -475,6 +490,27 @@ func findSlotPane(sedgePaneID string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// findAllSlotPanes returns every non-sedge pane sharing sedge's window, in
+// tmux list-panes order. Used when we need to clear the window of everything
+// but sedge (e.g. before joining a fresh slot pane on worktree swap).
+func findAllSlotPanes(sedgePaneID string) ([]string, error) {
+	win, err := paneWindow(sedgePaneID)
+	if err != nil {
+		return nil, err
+	}
+	out, err := exec.Command("tmux", "list-panes", "-t", win, "-F", "#{pane_id}").Output()
+	if err != nil {
+		return nil, err
+	}
+	var slots []string
+	for _, id := range strings.Fields(string(out)) {
+		if id != sedgePaneID {
+			slots = append(slots, id)
+		}
+	}
+	return slots, nil
 }
 
 func trimNewline(s string) string {
