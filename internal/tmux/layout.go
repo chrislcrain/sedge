@@ -147,18 +147,21 @@ func FindWindowForCwd(cwd, excludePaneID string) (windowID, paneID string, err e
 	return "", "", nil
 }
 
-// SwapInPane makes targetPaneID the visible slot next to sedge. sedgeCols is
-// the absolute number of columns sedge keeps; claude (the joined pane) gets
-// the rest of the window. If sedgeCols <= 0 a percentage fallback is used.
+// SwapInPane makes the worktree containing targetPaneID the visible slot
+// next to sedge. sedgeCols is the absolute number of columns sedge keeps;
+// the joined panes share the rest of the window. If sedgeCols <= 0 a
+// percentage fallback is used.
 //
 // Algorithm:
 //  1. If sedgePaneID and targetPaneID are already in the same window, just
 //     focus the target.
-//  2. Otherwise, break the current slot back to its own background window
-//     (named after its worktree session) so its process keeps running.
-//  3. join-pane the target into sedge's window sized so sedge ends up at
-//     sedgeCols columns.
-//  4. Focus the newly-joined pane.
+//  2. Otherwise, break the current slot subtree back to its own background
+//     window so the processes inside keep running.
+//  3. Bring EVERY pane from the target worktree's window into sedge's
+//     window. The first one is sized so sedge ends up at sedgeCols columns;
+//     additional panes (user-added shells, sub-agent viewers, etc.) are
+//     stacked next to it preserving the multi-pane slot per worktree.
+//  4. Focus the newly-joined primary pane.
 func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct int) error {
 	if sedgePaneID == "" {
 		return fmt.Errorf("sedge pane id unknown (TMUX_PANE not set)")
@@ -175,6 +178,23 @@ func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct
 		_, err := run("select-pane", "-t", targetPaneID)
 		return err
 	}
+
+	// Resolve every pane sharing the target's window — these are the
+	// worktree's full slot subtree (claude plus any user splits).
+	targetWin, err := paneWindow(targetPaneID)
+	if err != nil {
+		return err
+	}
+	targetPanes, err := paneIDsInWindow(targetWin)
+	if err != nil {
+		return err
+	}
+	if len(targetPanes) == 0 {
+		return fmt.Errorf("target window %q has no panes", targetWin)
+	}
+	// Put the explicitly requested pane first so it lands in the primary
+	// slot position and is the one we focus at the end.
+	targetPanes = movePaneFirst(targetPanes, targetPaneID)
 
 	// Capture the user's current sedge pane width BEFORE detaching the slot
 	// so we can preserve manual resizes across swaps. Only meaningful when a
@@ -200,11 +220,52 @@ func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct
 		desiredSedgeCols = preservedCols
 	}
 	sizeArg := computeJoinSize(sedgePaneID, desiredSedgeCols, fallbackSlotPct)
-	if _, err := run("join-pane", "-h", "-l", sizeArg, "-s", targetPaneID, "-t", sedgePaneID); err != nil {
+	if _, err := run("join-pane", "-h", "-l", sizeArg, "-s", targetPanes[0], "-t", sedgePaneID); err != nil {
 		return err
 	}
-	_, err = run("select-pane", "-t", targetPaneID)
+	// Bring any extra panes the worktree carried (shells, viewers, manual
+	// splits) into sedge's window too, parking each next to the primary
+	// pane. tmux will subdivide that region; best-effort on layout.
+	for _, p := range targetPanes[1:] {
+		if _, jerr := run("join-pane", "-h", "-s", p, "-t", targetPanes[0]); jerr != nil {
+			// If a particular pane refuses to join, leave it in its
+			// source window rather than losing the process.
+			continue
+		}
+	}
+	_, err = run("select-pane", "-t", targetPanes[0])
 	return err
+}
+
+// paneIDsInWindow returns every pane in the given window, in tmux list
+// order. Used to scoop up a worktree's full multi-pane slot subtree.
+func paneIDsInWindow(windowID string) ([]string, error) {
+	if windowID == "" {
+		return nil, nil
+	}
+	out, err := exec.Command("tmux", "list-panes", "-t", windowID, "-F", "#{pane_id}").Output()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, id := range strings.Fields(string(out)) {
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// movePaneFirst returns ids with `first` placed at index 0 if it's present,
+// preserving the relative order of the rest. Used so SwapInPane joins the
+// primary claude pane before any user-added extras.
+func movePaneFirst(ids []string, first string) []string {
+	out := make([]string, 0, len(ids))
+	out = append(out, first)
+	for _, id := range ids {
+		if id != first {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // WindowActivity returns the time of the window's last activity (any pane
