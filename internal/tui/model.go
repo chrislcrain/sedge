@@ -15,6 +15,7 @@ import (
 	"github.com/chrislcrain/sedge/internal/instructions"
 	"github.com/chrislcrain/sedge/internal/project"
 	"github.com/chrislcrain/sedge/internal/tmux"
+	"github.com/chrislcrain/sedge/internal/xdg"
 )
 
 const (
@@ -350,7 +351,7 @@ func (m Model) updateConfirmCleanExit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "Y":
 		root := m.cfg.WorktreesRoot
 		if root == "" {
-			root = "~/.sedge/worktrees"
+			root = xdg.DefaultWorktreesRoot()
 		}
 		return m, tea.Sequence(cleanExitCmd(root), tea.Quit)
 	default:

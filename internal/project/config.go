@@ -23,7 +23,7 @@ type Config struct {
 func defaults() Config {
 	return Config{
 		DefaultPermissionMode: "auto",
-		WorktreesRoot:         "~/.sedge/worktrees",
+		WorktreesRoot:         xdg.DefaultWorktreesRoot(),
 		SlotWidthPercent:      80,
 		SedgeWidthCols:        34,
 		MaxParallelSubAgents:  3,
@@ -51,7 +51,7 @@ func Load() (Config, error) {
 		cfg.DefaultPermissionMode = "auto"
 	}
 	if cfg.WorktreesRoot == "" {
-		cfg.WorktreesRoot = "~/.sedge/worktrees"
+		cfg.WorktreesRoot = xdg.DefaultWorktreesRoot()
 	}
 	if cfg.SlotWidthPercent <= 0 || cfg.SlotWidthPercent >= 100 {
 		cfg.SlotWidthPercent = 80

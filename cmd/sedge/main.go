@@ -102,7 +102,7 @@ func ensureInit() error {
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
 		return project.Save(project.Config{
 			DefaultPermissionMode: "auto",
-			WorktreesRoot:         "~/.sedge/worktrees",
+			WorktreesRoot:         xdg.DefaultWorktreesRoot(),
 		})
 	}
 	return nil
@@ -111,7 +111,7 @@ func ensureInit() error {
 func cmdInit() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "Initialize ~/.sedge with defaults (idempotent)",
+		Short: "Initialize the sedge home directory with defaults (idempotent)",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if err := ensureInit(); err != nil {
 				return err
@@ -214,7 +214,7 @@ func cmdRm() *cobra.Command {
 func cmdEdit() *cobra.Command {
 	return &cobra.Command{
 		Use:   "edit",
-		Short: "Open ~/.sedge/config.toml in $EDITOR",
+		Short: "Open config.toml in $EDITOR",
 		RunE: func(_ *cobra.Command, _ []string) error {
 			editor := os.Getenv("EDITOR")
 			if editor == "" {

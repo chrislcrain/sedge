@@ -1,4 +1,7 @@
-// Package xdg resolves sedge's on-disk paths under ~/.sedge.
+// Package xdg resolves sedge's on-disk paths.
+//
+// The root directory defaults to ~/.sedge but can be overridden by setting
+// the SEDGE_HOME environment variable (leading "~" is expanded).
 package xdg
 
 import (
@@ -6,12 +9,28 @@ import (
 	"path/filepath"
 )
 
+// Root returns sedge's home directory: $SEDGE_HOME if set, otherwise
+// $HOME/.sedge.
 func Root() (string, error) {
+	if h := os.Getenv("SEDGE_HOME"); h != "" {
+		return Expand(h), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(home, ".sedge"), nil
+}
+
+// DefaultWorktreesRoot returns the path used as the default for
+// `worktrees_root` in config.toml when none is set. It tracks Root() so
+// SEDGE_HOME flows through to fresh configs.
+func DefaultWorktreesRoot() string {
+	r, err := Root()
+	if err != nil {
+		return "~/.sedge/worktrees"
+	}
+	return filepath.Join(r, "worktrees")
 }
 
 // ClaudeProjectsDir returns the directory Claude Code uses for per-project

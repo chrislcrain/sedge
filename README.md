@@ -46,6 +46,20 @@ If you're outside tmux, `sedge` creates and attaches a session named
 `sedge`. If you're inside tmux, it opens a new window in your current
 session and switches to it. Sedge always lives in its own dedicated window.
 
+### Relocating the sedge home directory
+
+Set `SEDGE_HOME` to override the default `~/.sedge` location (leading `~`
+is expanded). Worktrees default to `$SEDGE_HOME/worktrees` and can be
+moved independently via `worktrees_root` in `config.toml`.
+
+```sh
+export SEDGE_HOME=/code/.sedge       # add to your shell rc
+sedge init                            # populates the new home
+
+# Migrating an existing install:
+mv ~/.sedge /code/.sedge              # move state before re-running sedge
+```
+
 ## Layout
 
 ```
