@@ -40,6 +40,7 @@ func main() {
 		cmdRm(),
 		cmdEdit(),
 		cmdClean(),
+		cmdPrune(),
 		cmdWatchAgent(),
 		cmdVersion(),
 	)
@@ -286,6 +287,53 @@ func cmdClean() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&all, "all", false, "remove ALL sedge worktrees, even live ones")
 	return cmd
+}
+
+func cmdPrune() *cobra.Command {
+	return &cobra.Command{
+		Use:   "prune [name]",
+		Short: "Run `git worktree prune` across registered projects to drop orphaned refs",
+		Long: "Removes stale `.git/worktrees/<name>` metadata for worktree paths that " +
+			"no longer exist on disk (e.g. after a volume wipe). Operates on every " +
+			"registered project unless a name is given.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			cfg, err := project.Load()
+			if err != nil {
+				return err
+			}
+			projects := cfg.Projects
+			if len(args) == 1 {
+				p, _ := cfg.FindByName(args[0])
+				if p == nil {
+					return fmt.Errorf("project %q not found", args[0])
+				}
+				projects = []project.Project{*p}
+			}
+			for _, p := range projects {
+				out, err := exec.Command("git", "-C", p.Path, "worktree", "prune", "-v").CombinedOutput()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s: git worktree prune: %v\n%s", p.Name, err, out)
+					continue
+				}
+				trimmed := strings.TrimSpace(string(out))
+				if trimmed == "" {
+					fmt.Printf("%s: nothing to prune\n", p.Name)
+				} else {
+					fmt.Printf("%s:\n%s\n", p.Name, indent(trimmed, "  "))
+				}
+			}
+			return nil
+		},
+	}
+}
+
+func indent(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // liveSessionNames returns the set of session names ("s1234...") that match

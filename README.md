@@ -281,6 +281,7 @@ sedge ls                       # list registered projects
 sedge rm <name>                # unregister project
 sedge edit                     # open config.toml in $EDITOR
 sedge clean [name] [--all]     # prune worktrees with no live tmux pane
+sedge prune [name]             # `git worktree prune` across registered projects
 sedge watch-agent <jsonl>      # tail and pretty-print a sub-agent's log
 sedge version
 ```
