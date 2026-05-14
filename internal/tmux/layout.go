@@ -5,9 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"time"
 )
 
 // SpawnClaudeOpts is everything SpawnClaudeWindow needs.
@@ -266,30 +264,6 @@ func movePaneFirst(ids []string, first string) []string {
 		}
 	}
 	return out
-}
-
-// WindowActivity returns the time of the window's last activity (any pane
-// output), or the zero time if it can't be determined. Used alongside claude
-// JSONL mtime so that a shell, test runner, or other tool sharing the
-// worktree's background window also surfaces as "needs attention".
-func WindowActivity(windowID string) time.Time {
-	if windowID == "" {
-		return time.Time{}
-	}
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", windowID, "#{window_activity}").Output()
-	if err != nil {
-		return time.Time{}
-	}
-	s := strings.TrimSpace(string(out))
-	if s == "" {
-		return time.Time{}
-	}
-	// tmux emits window_activity as a Unix epoch (seconds).
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || n <= 0 {
-		return time.Time{}
-	}
-	return time.Unix(n, 0)
 }
 
 // paneCols returns the current width (in columns) of the given pane, or 0

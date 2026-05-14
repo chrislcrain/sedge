@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/chrislcrain/sedge/internal/agentlog"
+	"github.com/chrislcrain/sedge/internal/hookstate"
 	"github.com/chrislcrain/sedge/internal/instructions"
 	"github.com/chrislcrain/sedge/internal/project"
 	"github.com/chrislcrain/sedge/internal/tmux"
@@ -93,12 +94,6 @@ type Model struct {
 	status    string
 	w, h      int
 
-	// lastSeenMtime[wtPath] is the JSONL mtime sedge last considered "seen"
-	// by the user for that worktree. A worktree is marked WtWaiting when its
-	// current JSONL mtime advances past this bookmark. The bookmark is bumped
-	// to the current mtime whenever the worktree is the active slot.
-	lastSeenMtime map[string]time.Time
-
 	mode  mode
 	input textinput.Model
 
@@ -121,11 +116,10 @@ func New() (Model, error) {
 	ti.CharLimit = 256
 	ti.Width = 50
 	m := Model{
-		cfg:           cfg,
-		worktrees:     map[string][]project.Worktree{},
-		expanded:      map[string]bool{},
-		lastSeenMtime: map[string]time.Time{},
-		input:         ti,
+		cfg:       cfg,
+		worktrees: map[string][]project.Worktree{},
+		expanded:  map[string]bool{},
+		input:     ti,
 	}
 	m.rebuild()
 	return m, nil
@@ -191,26 +185,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadAllWorktreesCmd(m.cfg)
 
 	case worktreesMsg:
-		for i := range msg.list {
-			wt := &msg.list[i]
-			seen, hadSeen := m.lastSeenMtime[wt.Path]
-			if !hadSeen {
-				// First time we've laid eyes on this worktree this process —
-				// treat whatever's on disk as already-seen so we don't blink
-				// for stale-but-recent JSONLs left by a prior sedge run.
-				m.lastSeenMtime[wt.Path] = wt.JSONLMtime
-				seen = wt.JSONLMtime
-			}
-			switch wt.State {
-			case project.WtActive:
-				// The user is looking at it — anything in the JSONL is "seen".
-				m.lastSeenMtime[wt.Path] = wt.JSONLMtime
-			case project.WtBackground:
-				if !wt.JSONLMtime.IsZero() && wt.JSONLMtime.After(seen) {
-					wt.State = project.WtWaiting
-				}
-			}
-		}
+		// State (WtWaiting / WtApproval) is computed in loadWorktreesCmd
+		// from claude-code hook events (hookstate.Classify), so the model
+		// no longer needs a per-worktree "last seen mtime" bookmark.
 		m.worktrees[msg.project] = msg.list
 		m.rebuild()
 		m.clampCursor()
@@ -775,6 +752,8 @@ func (m Model) renderRow(r row) string {
 			dot = activeStyle.Render("●")
 		case project.WtWaiting:
 			dot = waitingStyle.Render("●")
+		case project.WtApproval:
+			dot = approvalStyle.Render("●")
 		case project.WtBackground:
 			dot = backgroundStyle.Render("◐")
 		}
@@ -812,25 +791,6 @@ func (m *Model) rebuild() {
 		rows = append(rows, row{kind: rowNewSession, project: p})
 	}
 	m.rows = rows
-}
-
-// bumpSeenForActiveAnd advances the activity bookmark to "now" for both the
-// worktree the user just picked (incoming) and whatever was the active slot
-// at the moment of the click (outgoing). Without this, a tmux #{window_activity}
-// tick fired by the join-pane/break-pane churn itself can make the just-vacated
-// worktree flash yellow on the very next refresh.
-func (m *Model) bumpSeenForActiveAnd(targetPath string) {
-	now := time.Now()
-	for _, wts := range m.worktrees {
-		for i := range wts {
-			if wts[i].State == project.WtActive {
-				m.lastSeenMtime[wts[i].Path] = now
-			}
-		}
-	}
-	if targetPath != "" {
-		m.lastSeenMtime[targetPath] = now
-	}
 }
 
 func (m *Model) clampCursor() {
@@ -879,10 +839,6 @@ func (m *Model) activateRow() tea.Cmd {
 			m.err = fmt.Errorf("not inside tmux; restart sedge from a non-tmux shell")
 			return nil
 		}
-		// Eager-bump bookmarks for both the worktree we're leaving and the
-		// one we're entering, so the brief window of swap-induced tmux
-		// activity doesn't trip a yellow waiting flash on either.
-		m.bumpSeenForActiveAnd(r.wt.Path)
 		return swapToWorktreeCmd(*r.project, *r.wt, m.cfg)
 	case rowSubAgent:
 		if !tmux.InsideTmux() {
@@ -906,19 +862,10 @@ func loadWorktreesCmd(p project.Project) tea.Cmd {
 		for i := range list {
 			winID, _, _ := tmux.FindWorktreeWindow(list[i].Path)
 			list[i].WindowID = winID
-			list[i].JSONLMtime = agentlog.LatestJSONLMtime(list[i].Path)
-			// Also fold in tmux's per-window last-activity timestamp so that
-			// non-claude tools sharing the background window (a running test
-			// suite, a tail -f, an `o`-opened shell, etc.) also flash the
-			// waiting indicator, not just claude turns/tool events.
-			if winID != "" {
-				if wa := tmux.WindowActivity(winID); wa.After(list[i].JSONLMtime) {
-					list[i].JSONLMtime = wa
-				}
-			}
-			// Tentative state from tmux/cwd alone; the model post-processes
-			// to upgrade WtBackground → WtWaiting based on the activity-mtime
-			// bookmark (which lives in the Model so it survives ticks).
+			// Base state from tmux/cwd alone. Background worktrees get
+			// upgraded below based on claude's actual in-flight signal so
+			// the indicator only blinks when claude is actually doing
+			// something, not on every JSONL touch.
 			switch {
 			case list[i].Path == activePath:
 				list[i].State = project.WtActive
@@ -926,6 +873,16 @@ func loadWorktreesCmd(p project.Project) tea.Cmd {
 				list[i].State = project.WtBackground
 			default:
 				list[i].State = project.WtDormant
+			}
+			if list[i].State == project.WtBackground {
+				if s, ok := hookstate.Read(list[i].Path); ok {
+					switch hookstate.Classify(s) {
+					case hookstate.ActivityInFlight:
+						list[i].State = project.WtWaiting
+					case hookstate.ActivityApprovalPending:
+						list[i].State = project.WtApproval
+					}
+				}
 			}
 			// Sub-agents only matter for live worktrees — dormant ones can't
 			// be running anything right now.

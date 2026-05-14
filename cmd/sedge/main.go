@@ -42,6 +42,8 @@ func main() {
 		cmdClean(),
 		cmdPrune(),
 		cmdWatchAgent(),
+		cmdHook(),
+		cmdInstallHooks(),
 		cmdVersion(),
 	)
 
