@@ -1,0 +1,21 @@
+{
+  "name": "spec-coverage-lifecycle",
+  "summary": "Continuation of plan-001. Covers SPEC.md §5.7–§5.9 — the lifecycle/orchestration cluster: orphan-free `q`/`X` exit semantics (§5.7), first-activation-only reflow contract (§5.8), and plan.json validation before worker spawn (§5.9). All three sessions are Tester-surface only and have no inter-session deps. Per TEAM.md §1.2 the one-package-per-session rule applies (only .claude/skills/sedge-tui-test/ is touched). Per TEAM.md §3, a red verdict against current main is a valid hand-off to the Implementer pool — the Tester ships a deterministic case, not a green run.",
+  "sessions": [
+    {
+      "id": "case-07-orphan-free-exit",
+      "task": "Author bin/cases/07-orphan-free-exit.sh exercising SPEC.md §5.7. Stage two worktrees A and B with their claude stubs running, then send `q` to the sedge pane. Assert: (a) sedge's window (window 0) is gone from `tmux list-windows`, (b) `pgrep -f 'claude .* -n <A>'` and `pgrep -f 'claude .* -n <B>'` each return ≥1 pid, (c) the formerly-slotted worktree now occupies its own background window with its claude pane intact. Then relaunch sedge in the same tmux server and send `X`. Assert: (a) every window whose primary pane's `pane_current_path` is under $SEDGE_HOME/worktrees/ is gone, (b) the matching `pgrep` calls return no pids, (c) any user-shell window outside worktrees_root is untouched (plant a decoy window at $TMPDIR/decoy and verify it survives). Files touched: .claude/skills/sedge-tui-test/bin/cases/, coverage.md. Acceptance: ./bin/run.sh runs case 07 to a deterministic verdict across 3 consecutive runs, coverage.md maps SPEC.md §5.7 → case 07, and the decoy-window survival check is asserted explicitly (not just implied).",
+      "depends_on": []
+    },
+    {
+      "id": "case-08-first-activation-reflow",
+      "task": "Author bin/cases/08-first-activation-reflow.sh exercising SPEC.md §5.8. From a fresh sedge launch (no worktrees yet), record sedge pane width via tmuxq → `W0`. Create worktree A (first activation); record sedge width again → `W1`. Create worktree B and swap between A and B three times; record sedge width after each swap → `W2..W4`. Assert: `W1 != W0` (first activation reflows — single allowed reflow), `W2 == W3 == W4 == W1` (subsequent swaps preserve width). To distinguish join-pane from swap-pane mechanically, snapshot `tmux list-panes -a -F '#{window_id} #{pane_id} #{pane_index}'` immediately before and after each switch and assert the swap-pane runs do NOT change the set of pane_ids in either window — only their assignment — while the first-activation step DOES introduce a new pane_id (the slot). Files touched: .claude/skills/sedge-tui-test/bin/cases/, coverage.md. Acceptance: ./bin/run.sh runs case 08 to a deterministic verdict across 3 consecutive runs, coverage.md maps SPEC.md §5.8 → case 08, and the pane_id-stability assertion is documented in the case header so the join/swap distinction is observable from the case file alone.",
+      "depends_on": []
+    },
+    {
+      "id": "case-09-plan-validation",
+      "task": "Author bin/cases/09-plan-validation.sh exercising SPEC.md §5.9. Create one worktree, press `W` to spawn the planner pane (record window pane count → `P0`), then in sequence write three malformed plans to <worktree>/.sedge/orchestration/plan.json, each with mtime bumped past the W-press baseline so sedge's tick poller picks them up: (1) two sessions sharing an `id`, (2) one session whose `depends_on` lists an id absent from the plan, (3) one session whose `depends_on` includes its own `id`. For each malformed plan, wait two refresh ticks then assert: window pane count is still `P0` (no worker spawned), the planner pane is still alive (its pane_id from the W-press still appears in `tmux list-panes`), and the file remains on disk (sedge did not silently consume it). Finally write a valid plan and assert the review modal renders (capture sedge pane, grep for the plan name and `Y/N`). Files touched: .claude/skills/sedge-tui-test/bin/cases/, coverage.md. Acceptance: ./bin/run.sh runs case 09 to a deterministic verdict across 3 consecutive runs, coverage.md maps SPEC.md §5.9 → case 09, and all three malformed-plan branches are asserted independently (no shortcut that proves only the first).",
+      "depends_on": []
+    }
+  ]
+}

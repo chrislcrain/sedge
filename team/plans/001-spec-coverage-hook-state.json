@@ -1,0 +1,21 @@
+{
+  "name": "spec-coverage-hook-state",
+  "summary": "Continuation of plan-000 (which covered SPEC.md §5.1–§5.3 plus the harness scaffold). This plan adds one Tester case per invariant for SPEC.md §5.4–§5.6 — the hook/state cluster: auto-resume on activation (§5.4), atomic concurrent hook writes (§5.5), and activity-indicator derivation from hook state alone (§5.6). All three sessions are Tester-surface only (.claude/skills/sedge-tui-test/) and depend on no other session — the harness scaffolded by plan-000 is already shipped. Per TEAM.md §3, a case that goes red against current main is a valid hand-off to the Implementer pool; the Tester's deliverable is a deterministic case, not a green run.",
+  "sessions": [
+    {
+      "id": "case-04-auto-resume",
+      "task": "Author bin/cases/04-auto-resume-continue.sh exercising SPEC.md §5.4. Upgrade bin/stubs/claude to append its full argv (one line per spawn) to $SEDGE_HOME/stub-argv/<session>.log so the case can introspect what flags sedge actually passed. The case: register two ephemeral repos, seed $CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/ with a synthetic .jsonl entry for the first worktree's cwd and leave the second's projects dir empty, activate both worktrees, then grep each stub-argv log. Assert: the history-bearing worktree's log contains `--continue`; the fresh worktree's log does NOT contain `--continue`. Files touched: .claude/skills/sedge-tui-test/bin/cases/, .claude/skills/sedge-tui-test/bin/stubs/claude, coverage.md. Acceptance: ./bin/run.sh runs case 04 to a deterministic verdict across 3 consecutive runs, coverage.md maps SPEC.md §5.4 → case 04, and stub-argv/ is created/cleaned inside the per-case SEDGE_HOME (no leakage to the host).",
+      "depends_on": []
+    },
+    {
+      "id": "case-05-hook-atomic",
+      "task": "Author bin/cases/05-hook-atomic-write.sh exercising SPEC.md §5.5. Pick one worktree path, then in parallel (N=50 background subshells + wait) feed `sedge hook PreToolUse` synthetic stdin payloads that differ only in `tool_name`. After all return, assert: (a) $SEDGE_HOME/hook-state/<wt-encoded>.json parses as one valid JSON object via `jq -e .`, (b) no `.tmp` or `<…>.json.<pid>` siblings remain in hook-state/, (c) the `event`, `at`, and `tool_name` fields are present and well-formed, (d) `at` parses as RFC 3339. Concurrency must use real subprocesses (not bash co-procs) so the kernel scheduler actually interleaves them. Files touched: .claude/skills/sedge-tui-test/bin/cases/, coverage.md. Acceptance: ./bin/run.sh runs case 05 to a deterministic verdict across 3 consecutive runs with no flaky-pass observed, coverage.md maps SPEC.md §5.5 → case 05, and a deliberate sabotage run (replace temp-file+rename with plain `>` in a scratch fork) makes the case fail — proving the assertion has teeth.",
+      "depends_on": []
+    },
+    {
+      "id": "case-06-activity-from-hook",
+      "task": "Author bin/cases/06-activity-from-hook.sh exercising SPEC.md §5.6. With one inactive (background-window) worktree, hand-write $SEDGE_HOME/hook-state/<encoded>.json containing `{\"event\":\"Notification\",\"at\":\"<now>\",\"session_id\":\"fake-x\"}`, wait one refresh tick, capture the sedge pane via tmuxq, and assert the worktree's row renders the approval-pending dot (orange ●). Overwrite the state file with `event=Stop`, wait one tick, assert the dot flips to idle (gray ◐). Critically: do NOT touch JSONL files in $CLAUDE_CONFIG_DIR for the run — and as a positive control, back-date any existing JSONL mtime to 1970 and confirm the dot still tracks hook events, proving the indicator is not sourced from JSONL mtime. Files touched: .claude/skills/sedge-tui-test/bin/cases/, coverage.md. Acceptance: ./bin/run.sh runs case 06 to a deterministic verdict across 3 consecutive runs, coverage.md maps SPEC.md §5.6 → case 06, and the JSONL-mtime control step is documented in the case's header comment so a future reader sees the intent.",
+      "depends_on": []
+    }
+  ]
+}
