@@ -11,7 +11,7 @@ that lands a new case or removes one.
 | 5.1 | sedge pane width is preserved across a worktree swap | `bin/cases/01-pane-width-stable.sh` |
 | 5.2 | no claude process is killed during a worktree swap | `bin/cases/02-no-kill-on-swap.sh` |
 | 5.3 | pane count rehydrates on swap-back | `bin/cases/03-pane-count-rehydrates.sh` |
-| 5.4 | `--continue` is passed iff JSONL history exists | `bin/cases/04-autoresume.sh` |
+| 5.4 | `--continue` is passed iff JSONL history exists | `bin/cases/04-autoresume.sh` (red on main — see §4.2 row) |
 | 5.5 | hook-state writes are atomic under concurrency | `bin/cases/05-hook-atomic-write.sh` |
 | 5.6 | activity indicator is derived from hook state (not JSONL mtime) | `bin/cases/06-activity-from-hook.sh` |
 | 5.7 | orphan-free exit (q evacuates, X kills worktrees-root windows) | _pending_ |
@@ -27,6 +27,7 @@ coverage into a §5 row.
 
 | § | behaviour | dedicated case |
 |---|-----------|----------------|
+| 4.2 | auto-resume only triggers on `*.jsonl` history (not arbitrary entries) | `bin/cases/04-autoresume.sh` (red on main; waiting on impl fix to filter for `*.jsonl`) |
 | 4.6 | orchestration `W` end-to-end (planner → review → workers) | _pending_ |
 | 4.7 | ship preflight + `gh pr create` fallback | _pending_ |
 

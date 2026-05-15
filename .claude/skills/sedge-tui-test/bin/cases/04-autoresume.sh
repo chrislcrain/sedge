@@ -2,21 +2,21 @@
 # 04-autoresume.sh — SPEC.md §5.4
 #
 # Invariant under test: when sedge spawns a worktree whose Claude project
-# dir ($CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/) is non-empty, the claude
-# command line includes `--continue`. With no prior history, `--continue`
-# is omitted.
+# dir ($CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/) holds JSONL session
+# history, the claude command line includes `--continue`. Worktrees with
+# no prior JSONL history must spawn WITHOUT `--continue` — even when the
+# project dir is non-empty for some unrelated reason (settings.json,
+# .lock files, IDE metadata, etc).
 #
-# Flow:
-#   1. Register two ephemeral git repos as sedge projects: repo-resume and
-#      repo-fresh.
-#   2. For repo-resume, pre-seed a fake JSONL session file at the encoded
-#      path that the *future* worktree will live under, BEFORE creating
-#      the worktree (so HasClaudeHistory observes it at spawn time).
-#   3. Drive the `+ new session` flow for each project, accepting all
-#      defaults — sedge spawns claude (the stub) for each worktree.
-#   4. Inspect the live claude argv via `pgrep -af` and assert:
-#       - feat-resume's invocation includes `--continue`,
-#       - feat-fresh's invocation does NOT.
+# Three worktrees exercise the three cases:
+#
+#   feat-resume — project dir pre-seeded with a fake `*.jsonl` session
+#                 file. EXPECT `--continue` present.
+#   feat-fresh  — no project dir at all. EXPECT `--continue` absent.
+#   feat-noise  — project dir exists and is non-empty, but contains only
+#                 NON-jsonl files (settings.json, a .lock). EXPECT
+#                 `--continue` ABSENT. SPEC §5.4 says history is JSONL,
+#                 not "any directory entry".
 #
 # The encoded path scheme mirrors internal/project/recycle.go's
 # encodeClaudeProject: each '/', '.', ' ', '~' becomes '-'. If sedge ever
@@ -67,8 +67,10 @@ mk_repo() {
 
 REPO_RESUME="$HARNESS_TMP/repo-resume"
 REPO_FRESH="$HARNESS_TMP/repo-fresh"
+REPO_NOISE="$HARNESS_TMP/repo-noise"
 mk_repo "$REPO_RESUME"
 mk_repo "$REPO_FRESH"
+mk_repo "$REPO_NOISE"
 
 # Mirror internal/project/recycle.go encodeClaudeProject: each /, ., space,
 # or ~ → '-'. Implemented with `tr` to match the Go switch byte-for-byte.
@@ -82,10 +84,10 @@ encode_cwd() {
 # encoded location BEFORE the spawn fires.
 WT_RESUME="$SEDGE_HOME/worktrees/repo-resume/feat-resume"
 WT_FRESH="$SEDGE_HOME/worktrees/repo-fresh/feat-fresh"
+WT_NOISE="$SEDGE_HOME/worktrees/repo-noise/feat-noise"
 
-# Seed JSONL for the resume worktree. HasClaudeHistory just needs the
-# directory to exist and be non-empty; the file contents are not parsed
-# during the --continue decision.
+# Seed JSONL for the resume worktree. A *.jsonl file is the only thing
+# that should mean "this worktree has Claude session history".
 SEED_DIR="$CLAUDE_CONFIG_DIR/projects/$(encode_cwd "$WT_RESUME")"
 mkdir -p "$SEED_DIR"
 printf '{"type":"meta","ts":"2025-01-01T00:00:00Z"}\n' > "$SEED_DIR/seed-session.jsonl"
@@ -95,7 +97,17 @@ printf '{"type":"meta","ts":"2025-01-01T00:00:00Z"}\n' > "$SEED_DIR/seed-session
 FRESH_DIR="$CLAUDE_CONFIG_DIR/projects/$(encode_cwd "$WT_FRESH")"
 rm -rf "$FRESH_DIR"
 
+# Seed the noise worktree's project dir with NON-jsonl entries only. If
+# HasClaudeHistory ever degrades to "any directory entry" semantics
+# (the §4.2 over-eager bug Implementer-1 flagged), this seed will trip
+# --continue on a worktree that has no real session history.
+NOISE_DIR="$CLAUDE_CONFIG_DIR/projects/$(encode_cwd "$WT_NOISE")"
+mkdir -p "$NOISE_DIR"
+printf '{"theme":"dark"}\n' > "$NOISE_DIR/settings.json"
+printf '\n'                  > "$NOISE_DIR/.lock"
+
 echo "  [debug] seeded JSONL at: $SEED_DIR/seed-session.jsonl"
+echo "  [debug] seeded NON-jsonl at: $NOISE_DIR/settings.json + .lock"
 
 # ---------------------------------------------------------------------------
 # Register both projects via the CLI (writes config.toml under our scratch
@@ -103,12 +115,15 @@ echo "  [debug] seeded JSONL at: $SEED_DIR/seed-session.jsonl"
 # ---------------------------------------------------------------------------
 SEDGE_HOME="$SEDGE_HOME" CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" "$SEDGE_BIN" add "$REPO_RESUME" >/dev/null
 SEDGE_HOME="$SEDGE_HOME" CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" "$SEDGE_BIN" add "$REPO_FRESH"  >/dev/null
+SEDGE_HOME="$SEDGE_HOME" CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_DIR" "$SEDGE_BIN" add "$REPO_NOISE"  >/dev/null
 
 t send-keys -t "$SEDGE_PANE" 'r'
 wait_for 5 't_capture "$SEDGE_PANE" | grep -q "repo-resume"' \
   || { echo "  ERROR: repo-resume never appeared"; t_capture "$SEDGE_PANE" || true; exit 1; }
 wait_for 5 't_capture "$SEDGE_PANE" | grep -q "repo-fresh"' \
   || { echo "  ERROR: repo-fresh never appeared"; t_capture "$SEDGE_PANE" || true; exit 1; }
+wait_for 5 't_capture "$SEDGE_PANE" | grep -q "repo-noise"' \
+  || { echo "  ERROR: repo-noise never appeared"; t_capture "$SEDGE_PANE" || true; exit 1; }
 
 # ---------------------------------------------------------------------------
 # Cursor / row helpers (borrowed from case 03, kept inline so the case can
@@ -190,11 +205,10 @@ drive_create_worktree() {
 }
 
 # ---------------------------------------------------------------------------
-# Drive: create resume worktree first (seeded), then fresh worktree.
+# Drive: create resume / fresh / noise worktrees in that order. The
+# cursor_to_row_matching walker handles the changing layout as project
+# rows expand below the cursor.
 # ---------------------------------------------------------------------------
-# Cursor starts at row 0 → repo-resume (or repo-fresh — sedge sorts by
-# name; both names sort alphabetically as: repo-fresh, repo-resume). Walk
-# to the repo-resume row first.
 cursor_to_row_matching '▸ repo-resume|▾ repo-resume' 15 >/dev/null \
   || { echo "  ERROR: could not find repo-resume row"; exit 1; }
 drive_create_worktree "$REPO_RESUME" "feat-resume" >/dev/null
@@ -205,6 +219,11 @@ cursor_to_row_matching '▸ repo-fresh|▾ repo-fresh' 15 >/dev/null \
 drive_create_worktree "$REPO_FRESH" "feat-fresh" >/dev/null
 t select-pane -t "$SEDGE_PANE"
 
+cursor_to_row_matching '▸ repo-noise|▾ repo-noise' 15 >/dev/null \
+  || { echo "  ERROR: could not find repo-noise row"; exit 1; }
+drive_create_worktree "$REPO_NOISE" "feat-noise" >/dev/null
+t select-pane -t "$SEDGE_PANE"
+
 # ---------------------------------------------------------------------------
 # Inspect argv via pgrep. Each session name is unique within this harness's
 # process tree (we made up "feat-resume" / "feat-fresh"), so the matches
@@ -212,15 +231,18 @@ t select-pane -t "$SEDGE_PANE"
 # ---------------------------------------------------------------------------
 resume_cmd=$(pgrep -af "claude .* -n feat-resume" | head -1)
 fresh_cmd=$(pgrep -af "claude .* -n feat-fresh"   | head -1)
+noise_cmd=$(pgrep -af "claude .* -n feat-noise"   | head -1)
 
 [[ -n "$resume_cmd" ]] || { echo "  FAIL: no claude(-n feat-resume) found"; pgrep -af claude || true; exit 1; }
 [[ -n "$fresh_cmd"  ]] || { echo "  FAIL: no claude(-n feat-fresh) found";  pgrep -af claude || true; exit 1; }
+[[ -n "$noise_cmd"  ]] || { echo "  FAIL: no claude(-n feat-noise) found";  pgrep -af claude || true; exit 1; }
 
 echo "  [debug] resume cmd: $resume_cmd"
 echo "  [debug] fresh  cmd: $fresh_cmd"
+echo "  [debug] noise  cmd: $noise_cmd"
 
 assert_contains "$resume_cmd" "--continue" \
-  "SPEC §5.4: claude invocation for seeded worktree includes --continue"
+  "SPEC §5.4: claude invocation for JSONL-seeded worktree includes --continue"
 
 if [[ "$fresh_cmd" == *"--continue"* ]]; then
   echo "  FAIL: SPEC §5.4: claude invocation for fresh worktree must omit --continue"
@@ -228,6 +250,20 @@ if [[ "$fresh_cmd" == *"--continue"* ]]; then
   exit 1
 else
   printf '  PASS: SPEC §5.4: claude invocation for fresh worktree omits --continue\n'
+fi
+
+# §5.4 + §4.2: a project dir with NON-jsonl noise does not constitute
+# history. --continue MUST be omitted for feat-noise. Until the
+# implementation filters by `*.jsonl` this assertion is RED — that's
+# the intended hand-off per TEAM.md §3: the case is the deliverable,
+# not a green run.
+if [[ "$noise_cmd" == *"--continue"* ]]; then
+  echo "  FAIL: SPEC §5.4 / §4.2: claude invocation for noise-only worktree must omit --continue"
+  echo "    noise cmd: $noise_cmd"
+  echo "    (HasClaudeHistory should be filtering for *.jsonl, not any directory entry.)"
+  exit 1
+else
+  printf '  PASS: SPEC §5.4: claude invocation for noise-only worktree omits --continue\n'
 fi
 
 # harness_teardown fires from the EXIT trap installed by tmuxq.
