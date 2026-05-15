@@ -60,7 +60,10 @@ type claudeHookInput struct {
 }
 
 // hookEvents enumerates every claude-code event sedge subscribes to. Order
-// matters only for deterministic test output.
+// matters only for deterministic test output. The list must stay in lockstep
+// with SPEC.md §4.5's classification table — every event Classify recognises
+// has to be installable, otherwise install-hooks silently drops the event
+// and the indicator stalls in whatever state preceded it.
 var hookEvents = []hookstate.Event{
 	hookstate.EventSessionStart,
 	hookstate.EventSessionEnd,
@@ -70,6 +73,7 @@ var hookEvents = []hookstate.Event{
 	hookstate.EventNotification,
 	hookstate.EventStop,
 	hookstate.EventSubagentStop,
+	hookstate.EventPreCompact,
 }
 
 // cmdInstallHooks merges sedge's hook entries into the user's claude-code
