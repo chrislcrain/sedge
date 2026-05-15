@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Fake `claude` for the sedge-tui-test harness. Behaves as a long-running
+# claude-code session that sedge can spawn into a pane without any network
+# or real model call. Fires a SessionStart hook so sedge's status pipeline
+# observes the session, then reads stdin forever so the pane stays alive.
+#
+# Recognised pseudo-commands typed into the stub:
+#   __hook:<EventName>   inject a hook event for the current cwd
+
+set -u
+
+NAME=""
+# Pull out -n NAME if sedge passed it; ignore the rest, including
+# --add-dir, --append-system-prompt-file, --permission-mode, --continue,
+# --agents JSON-payload.
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -n)
+      NAME="${2:-}"
+      shift 2
+      ;;
+    --add-dir|--append-system-prompt-file|--permission-mode|--agents|--model)
+      shift 2
+      ;;
+    --continue|--inside-tmux)
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+NAME=${NAME:-unknown}
+
+if [[ -n "${SEDGE_BIN:-}" && -x "${SEDGE_BIN}" ]]; then
+  printf '{"cwd":"%s","session_id":"fake-%s"}\n' "$PWD" "$NAME" \
+    | "$SEDGE_BIN" hook SessionStart >/dev/null 2>&1 || true
+fi
+
+printf '[fake-claude] %s in %s — ready\n' "$NAME" "$PWD"
+trap 'exit 0' TERM INT
+
+while IFS= read -r line; do
+  case "$line" in
+    __hook:*)
+      ev=${line#__hook:}
+      if [[ -n "${SEDGE_BIN:-}" && -x "${SEDGE_BIN}" ]]; then
+        printf '{"cwd":"%s","tool_name":"Bash","session_id":"fake-%s"}\n' "$PWD" "$NAME" \
+          | "$SEDGE_BIN" hook "$ev" >/dev/null 2>&1 || true
+      fi
+      printf '[fake-claude] injected hook %s\n' "$ev"
+      ;;
+    "")
+      ;;
+    *)
+      printf '> %s\n' "$line"
+      ;;
+  esac
+done
