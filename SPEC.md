@@ -185,7 +185,7 @@ The TUI reads the file every refresh tick and classifies via
 | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStop` | in flight     | yellow ● blink |
 | `Notification`                                            | approval pending    | orange ● |
 | `Stop`, `SessionEnd`, `SessionStart`, `PreCompact`        | idle (background)   | gray ◐   |
-| state file > 10 min old                                   | idle (assume crash) | gray ◐   |
+| state file older than `hook_stale_minutes` (default 10)   | idle (assume crash) | gray ◐   |
 | no state file                                             | dormant             | gray ○   |
 | worktree is in the slot                                   | active              | green ●  |
 
@@ -193,6 +193,16 @@ The active classification is computed from `tmux.ActiveSlotPath` —
 whichever worktree's path matches the cwd of sedge's slot pane.
 
 Hook installation is idempotent. `sedge install-hooks` may be re-run safely.
+
+The crash-fallback threshold (last row of the table above) is the elapsed
+time after which an unchanged hook-state file is taken to mean the
+claude process died without writing a `Stop`/`SessionEnd` event. The
+default 10 minutes is conservative enough that a long-running idle
+claude is not misclassified, and short enough that an actually-crashed
+session goes gray well inside one work session. It is exposed as
+`hook_stale_minutes` in `config.toml` (§4.11) so test harnesses and
+unusual deployments can tune it; setting it to `0` disables the
+fallback entirely (file age never demotes activity).
 
 ### 4.6 Orchestration (`W` key)
 
@@ -318,6 +328,8 @@ slot_width_percent      = 80   # legacy fallback
 
 max_parallel_subagents  = 3
 max_subagent_depth      = 3
+
+hook_stale_minutes      = 10   # crash-fallback threshold (§4.5); 0 disables
 
 [[projects]]
 name           = "sedge"
