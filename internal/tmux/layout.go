@@ -145,18 +145,25 @@ func FindWindowForCwd(cwd, excludePaneID string) (windowID, paneID string, err e
 	return "", "", nil
 }
 
-// SwapInPane makes targetPaneID the visible slot next to sedge. sedgeCols is
-// the absolute number of columns sedge keeps; claude (the joined pane) gets
-// the rest of the window. If sedgeCols <= 0 a percentage fallback is used.
+// SwapInPane makes the worktree containing targetPaneID the visible slot
+// next to sedge.
 //
-// Algorithm:
-//  1. If sedgePaneID and targetPaneID are already in the same window, just
-//     focus the target.
-//  2. Otherwise, break the current slot back to its own background window
-//     (named after its worktree session) so its process keeps running.
-//  3. join-pane the target into sedge's window sized so sedge ends up at
-//     sedgeCols columns.
-//  4. Focus the newly-joined pane.
+// Key property: when a slot already exists, the swap is performed via
+// `tmux swap-pane` exchanges — one per matched slot/target pair. swap-pane
+// preserves each window's layout, so sedge's own pane never resizes
+// (no flicker, no bubbletea re-flow). Only on the very first activation
+// (no slot yet) does sedge shrink, and only once.
+//
+// Asymmetric counts:
+//   - target has MORE panes than slot: the extras are join-paned into
+//     sedge's window next to the newly-arrived primary, growing the slot
+//     subtree without touching sedge's pane.
+//   - slot has MORE panes than target: the extras are pushed into the
+//     window holding the old primary (which after the swap is the OLD
+//     worktree's background home), again without touching sedge's pane.
+//
+// sedgeCols / fallbackSlotPct are only consulted on the no-slot-yet path
+// where a fresh join-pane has to size the initial slot.
 func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct int) error {
 	if sedgePaneID == "" {
 		return fmt.Errorf("sedge pane id unknown (TMUX_PANE not set)")
@@ -174,35 +181,222 @@ func SwapInPane(sedgePaneID, targetPaneID string, sedgeCols int, fallbackSlotPct
 		return err
 	}
 
-	// Capture the user's current sedge pane width BEFORE detaching the slot
-	// so we can preserve manual resizes across swaps. Only meaningful when a
-	// slot pane is currently sharing the window with sedge — otherwise sedge
-	// already fills the window and the captured width is the full width.
-	slot, err := findSlotPane(sedgePaneID)
+	targetWin, err := paneWindow(targetPaneID)
 	if err != nil {
 		return err
 	}
-	preservedCols := 0
-	if slot != "" {
-		preservedCols = paneCols(sedgePaneID)
+	targetPanes, err := paneIDsInWindow(targetWin)
+	if err != nil {
+		return err
 	}
+	if len(targetPanes) == 0 {
+		return fmt.Errorf("target window %q has no panes", targetWin)
+	}
+	// The explicitly-requested pane goes first so it lands where the
+	// primary slot pane was and ends up focused.
+	targetPanes = movePaneFirst(targetPanes, targetPaneID)
 
-	if err := DetachSlotPane(sedgePaneID); err != nil {
+	slotPanes, err := findAllSlotPanes(sedgePaneID)
+	if err != nil {
 		return err
 	}
 
-	// If we captured a user-set width, honour it; only fall back to the
-	// configured/computed sedgeCols when we don't have one (first swap).
-	desiredSedgeCols := sedgeCols
-	if preservedCols > 0 {
-		desiredSedgeCols = preservedCols
-	}
-	sizeArg := computeJoinSize(sedgePaneID, desiredSedgeCols, fallbackSlotPct)
-	if _, err := run("join-pane", "-h", "-l", sizeArg, "-s", targetPaneID, "-t", sedgePaneID); err != nil {
+	if len(slotPanes) == 0 {
+		// First activation in this sedge session — sedge is alone in
+		// its window and has to give up some columns to the joined
+		// pane. This is the one unavoidable reflow.
+		sizeArg := computeJoinSize(sedgePaneID, sedgeCols, fallbackSlotPct)
+		if _, err := run("join-pane", "-h", "-l", sizeArg, "-s", targetPanes[0], "-t", sedgePaneID); err != nil {
+			return err
+		}
+		for _, p := range targetPanes[1:] {
+			_, _ = run("join-pane", "-h", "-s", p, "-t", targetPanes[0])
+		}
+		_, err = run("select-pane", "-t", targetPanes[0])
 		return err
 	}
-	_, err = run("select-pane", "-t", targetPaneID)
+
+	// Pair up slot panes with target panes and swap them position-for-
+	// position. swap-pane leaves each window's layout untouched — sedge's
+	// pane width is preserved exactly, no flicker.
+	n := len(slotPanes)
+	if len(targetPanes) < n {
+		n = len(targetPanes)
+	}
+	for i := 0; i < n; i++ {
+		if _, err := run("swap-pane", "-s", slotPanes[i], "-t", targetPanes[i]); err != nil {
+			return err
+		}
+	}
+
+	// After the swap loop:
+	//   sedge's window has the matched target panes (targetPanes[0..n-1])
+	//   in the original slot positions, plus any leftover slot panes
+	//   (slotPanes[n..]).
+	//   The former-target window now holds the matched slot panes
+	//   (slotPanes[0..n-1]) plus any leftover target panes (targetPanes[n..]).
+
+	// Target had MORE panes than slot — pull the leftovers into sedge's
+	// window, attaching next to the primary so sedge's pane stays put.
+	for i := n; i < len(targetPanes); i++ {
+		_, _ = run("join-pane", "-h", "-s", targetPanes[i], "-t", targetPanes[0])
+	}
+
+	// Slot had MORE panes than target — push the leftovers into the
+	// former-target window (which is now the OLD worktree's home) so
+	// the old processes keep running together.
+	for i := n; i < len(slotPanes); i++ {
+		_, _ = run("join-pane", "-h", "-s", slotPanes[i], "-t", slotPanes[0])
+	}
+
+	_, err = run("select-pane", "-t", targetPanes[0])
 	return err
+}
+
+// SpawnPlannerOpts is the configuration for SpawnOrchestrationPlanner.
+type SpawnPlannerOpts struct {
+	SedgePaneID    string // sedge's own pane (where TMUX_PANE points)
+	WorktreeDir    string // the worktree the planner will run in
+	ProjectPath    string // passed to claude --add-dir
+	PromptFile     string // planner system prompt path
+	SessionName    string // claude -n value, e.g. "<wt>-orchestrate"
+	PermissionMode string // claude --permission-mode value (usually "default")
+	Model          string // optional claude --model override
+}
+
+// SpawnOrchestrationPlanner splits a fresh claude pane *below* the
+// worktree's existing slot subtree, primed with the planner system
+// prompt. The existing claude pane is left intact and visible above so
+// the user can still see context. Returns the new planner pane's id.
+//
+// Caller is responsible for first ensuring the worktree is the visible
+// slot (so the planner appears next to claude, not below sedge alone).
+func SpawnOrchestrationPlanner(opts SpawnPlannerOpts) (string, error) {
+	if opts.SedgePaneID == "" {
+		return "", errNoSedgePane
+	}
+	target := opts.SedgePaneID
+	if slot, _ := findSlotPane(opts.SedgePaneID); slot != "" {
+		target = slot
+	}
+	args := []string{
+		"split-window", "-v", "-l", "40%",
+		"-t", target,
+		"-c", opts.WorktreeDir,
+		"-P", "-F", "#{pane_id}",
+		"--",
+	}
+	args = append(args, buildClaudeCmdline(SpawnClaudeOpts{
+		WorktreeDir:    opts.WorktreeDir,
+		ProjectPath:    opts.ProjectPath,
+		PromptFile:     opts.PromptFile,
+		SessionName:    opts.SessionName,
+		PermissionMode: opts.PermissionMode,
+		Model:          opts.Model,
+	})...)
+	out, err := exec.Command("tmux", args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("split-window (planner): %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	paneID := strings.TrimSpace(string(out))
+	if paneID != "" {
+		_, _ = run("select-pane", "-t", paneID)
+	}
+	return paneID, nil
+}
+
+// SpawnWorkerOpts configures a single worker pane spawn for orchestration.
+type SpawnWorkerOpts struct {
+	AnchorPaneID   string // pane to split off — typically the worktree's claude slot pane
+	WorktreeDir    string
+	ProjectPath    string
+	PromptFile     string // per-session system prompt
+	SessionName    string // claude -n value
+	PermissionMode string
+	Model          string
+}
+
+// SpawnOrchestrationWorker adds a worker claude pane to the worktree
+// window by horizontally splitting the anchor pane. Returns the new
+// pane id so the caller can track and focus it. Best-effort layout —
+// tmux will tile as more workers are added.
+func SpawnOrchestrationWorker(opts SpawnWorkerOpts) (string, error) {
+	if opts.AnchorPaneID == "" {
+		return "", fmt.Errorf("anchor pane id empty")
+	}
+	args := []string{
+		"split-window", "-h",
+		"-t", opts.AnchorPaneID,
+		"-c", opts.WorktreeDir,
+		"-P", "-F", "#{pane_id}",
+		"--",
+	}
+	args = append(args, buildClaudeCmdline(SpawnClaudeOpts{
+		WorktreeDir:    opts.WorktreeDir,
+		ProjectPath:    opts.ProjectPath,
+		PromptFile:     opts.PromptFile,
+		SessionName:    opts.SessionName,
+		PermissionMode: opts.PermissionMode,
+		Model:          opts.Model,
+	})...)
+	out, err := exec.Command("tmux", args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("split-window (worker): %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// KillPane kills a specific tmux pane. Used to dismiss the planner
+// pane after a plan is approved (or rejected) so the user's window
+// isn't left cluttered. No-op on empty id or already-gone pane.
+func KillPane(paneID string) error {
+	if paneID == "" {
+		return nil
+	}
+	_, err := run("kill-pane", "-t", paneID)
+	return err
+}
+
+// EvenLayoutTiled re-tiles the panes of windowID using tmux's
+// tiled layout, which spreads N panes across rows+cols evenly. Used
+// after spawning worker panes so the row of workers looks balanced.
+func EvenLayoutTiled(windowID string) error {
+	if windowID == "" {
+		return nil
+	}
+	_, err := run("select-layout", "-t", windowID, "tiled")
+	return err
+}
+
+// paneIDsInWindow returns every pane in the given window, in tmux list
+// order. Used to scoop up a worktree's full multi-pane slot subtree.
+func paneIDsInWindow(windowID string) ([]string, error) {
+	if windowID == "" {
+		return nil, nil
+	}
+	out, err := exec.Command("tmux", "list-panes", "-t", windowID, "-F", "#{pane_id}").Output()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, id := range strings.Fields(string(out)) {
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// movePaneFirst returns ids with `first` placed at index 0 if it's present,
+// preserving the relative order of the rest. Used so SwapInPane joins the
+// primary claude pane before any user-added extras.
+func movePaneFirst(ids []string, first string) []string {
+	out := make([]string, 0, len(ids))
+	out = append(out, first)
+	for _, id := range ids {
+		if id != first {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // paneCols returns the current width (in columns) of the given pane, or 0
@@ -292,19 +486,23 @@ func FocusPane(paneID string) error {
 	return err
 }
 
-// DetachSlotPane breaks the current slot pane (if any) back to its own
-// background tmux window so the process inside it keeps running while no
-// longer sharing the sedge window. No-op if no slot pane is joined.
+// DetachSlotPane breaks every non-sedge pane in sedge's window back to a
+// single background tmux window so the processes inside keep running while no
+// longer sharing the sedge window. No-op if sedge is alone in its window.
+//
+// All non-sedge panes are evacuated — not just the "primary" slot — so that
+// user-opened extras (a shell via `o`, a sub-agent viewer split, etc.) don't
+// linger in the sedge window and squash sedge to a sliver on the next swap.
 func DetachSlotPane(sedgePaneID string) error {
 	if sedgePaneID == "" {
 		return nil
 	}
-	slot, err := findSlotPane(sedgePaneID)
-	if err != nil || slot == "" {
+	slots, err := findAllSlotPanes(sedgePaneID)
+	if err != nil || len(slots) == 0 {
 		return err
 	}
-	name := slotWindowName(slot)
-	args := []string{"break-pane", "-d", "-P", "-F", "#{window_id}", "-s", slot}
+	name := slotWindowName(slots[0])
+	args := []string{"break-pane", "-d", "-P", "-F", "#{window_id}", "-s", slots[0]}
 	if name != "" {
 		args = append(args, "-n", name)
 	}
@@ -315,6 +513,17 @@ func DetachSlotPane(sedgePaneID string) error {
 	newWinID := strings.TrimSpace(string(out))
 	if newWinID != "" {
 		_, _ = run("set-window-option", "-t", newWinID, "monitor-activity", "on")
+	}
+	// Move any remaining non-sedge panes into the same background window so
+	// they survive but stop crowding sedge. Target slots[0] (the just-broken
+	// pane, now in the new window) directly rather than the window id, since
+	// `join-pane -t` expects a pane spec.
+	for _, p := range slots[1:] {
+		if _, jerr := run("join-pane", "-d", "-h", "-s", p, "-t", slots[0]); jerr != nil {
+			// Last-resort fallback: if we somehow can't park it next to the
+			// broken-out pane, kill it rather than leave it crushing sedge.
+			_, _ = run("kill-pane", "-t", p)
+		}
 	}
 	return nil
 }
@@ -475,6 +684,27 @@ func findSlotPane(sedgePaneID string) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+// findAllSlotPanes returns every non-sedge pane sharing sedge's window, in
+// tmux list-panes order. Used when we need to clear the window of everything
+// but sedge (e.g. before joining a fresh slot pane on worktree swap).
+func findAllSlotPanes(sedgePaneID string) ([]string, error) {
+	win, err := paneWindow(sedgePaneID)
+	if err != nil {
+		return nil, err
+	}
+	out, err := exec.Command("tmux", "list-panes", "-t", win, "-F", "#{pane_id}").Output()
+	if err != nil {
+		return nil, err
+	}
+	var slots []string
+	for _, id := range strings.Fields(string(out)) {
+		if id != sedgePaneID {
+			slots = append(slots, id)
+		}
+	}
+	return slots, nil
 }
 
 func trimNewline(s string) string {

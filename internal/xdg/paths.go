@@ -101,12 +101,23 @@ func PromptCacheDir() (string, error) {
 	return filepath.Join(r, "cache", "prompts"), nil
 }
 
+// HookStateDir returns the directory where `sedge hook` writes per-worktree
+// state files. One JSON file per worktree records the latest claude-code
+// hook event and its timestamp; the TUI polls these to render the indicator.
+func HookStateDir() (string, error) {
+	r, err := Root()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(r, "hook-state"), nil
+}
+
 func EnsureDirs() error {
 	r, err := Root()
 	if err != nil {
 		return err
 	}
-	for _, sub := range []string{"", "worktrees", filepath.Join("cache", "prompts")} {
+	for _, sub := range []string{"", "worktrees", filepath.Join("cache", "prompts"), "hook-state"} {
 		if err := os.MkdirAll(filepath.Join(r, sub), 0o755); err != nil {
 			return err
 		}

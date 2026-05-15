@@ -49,9 +49,13 @@ var (
 			Foreground(lipgloss.Color("244")) // dim cool gray for idle background
 
 	waitingStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("226")). // bright yellow — activity in a non-visible worktree
+			Foreground(lipgloss.Color("226")). // bright yellow — claude is actively thinking / running a tool
 			Bold(true).
 			Blink(true)
+
+	approvalStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("208")). // orange — claude is paused, waiting on user approval
+			Bold(true)
 
 	dormantStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240")) // dim gray

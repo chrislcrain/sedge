@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/chrislcrain/sedge/internal/xdg"
 )
@@ -139,8 +138,9 @@ type WtState int
 
 const (
 	WtDormant    WtState = iota // no live tmux pane in this worktree
-	WtBackground                // live pane exists but it's not the visible slot
-	WtWaiting                   // live pane in background AND has new activity since last viewed
+	WtBackground                // live pane exists, claude is idle
+	WtWaiting                   // claude is actively thinking / running a tool right now
+	WtApproval                  // open tool_use awaiting user approval (claude paused)
 	WtActive                    // currently visible next to sedge (the slot pane)
 )
 
@@ -151,7 +151,6 @@ type Worktree struct {
 	Branch      string         // e.g. "sedge/s1700000000"
 	State       WtState        // populated by the TUI loader from tmux pane info
 	WindowID    string         // tmux window id for the background claude pane (when alive)
-	JSONLMtime  time.Time      // newest mtime across the worktree's claude session JSONLs (zero if none)
 	SubAgents   []SubAgentInfo // in-flight sub-agent calls (populated by the TUI loader)
 }
 

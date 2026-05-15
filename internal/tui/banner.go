@@ -100,12 +100,13 @@ var helpEntries = [][2]string{
 	{"n  ", "add project"},
 	{"o  ", "shell @ project / worktree"},
 	{"A  ", "adhoc chat @ project"},
+	{"W  ", "orchestrate (plan multi-pane work)"},
 	{"D  ", "delete (recycle)"},
 	{"P  ", "push + open PR"},
-	{"X  ", "kill all · quit"},
+	{"X  ", "kill all sessions, exit"},
 	{"e  ", "edit config"},
 	{"r  ", "reload"},
-	{"q  ", "quit (leave bg)"},
+	{"q  ", "exit, keep sessions alive"},
 }
 
 func renderHelp() string {
