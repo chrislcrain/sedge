@@ -85,11 +85,14 @@ assert_contains() {
 wait_for() {
   # Usage: wait_for <ceiling-seconds> <shell-command-string>
   # Polls every 0.2s until the command exits 0 or the ceiling is hit.
+  # TIMEOUT diagnostics go to stderr so callers can wrap wait_for in
+  # `$( ... )` for value capture without polluting the capture with a
+  # diagnostic line on a slow predicate.
   local ceiling="$1"; shift
   local start=$SECONDS
   while ! eval "$@" >/dev/null 2>&1; do
     if (( SECONDS - start >= ceiling )); then
-      printf '  TIMEOUT: wait_for after %ss: %s\n' "$ceiling" "$*"
+      printf '  TIMEOUT: wait_for after %ss: %s\n' "$ceiling" "$*" >&2
       return 1
     fi
     sleep 0.2
@@ -103,12 +106,15 @@ harness_setup() {
   export CLAUDE_CONFIG_DIR="$HARNESS_TMP/.claude"
   mkdir -p "$SEDGE_HOME" "$CLAUDE_CONFIG_DIR"
 
-  t new-session -d -s t -x 200 -y 50
-
-  # Launch sedge in the session's only pane. --inside-tmux skips sedge's
-  # own tmux-detect/auto-attach logic (SPEC.md §4.10), which is what we
-  # want — the harness has already arranged a tmux server.
-  t_keys t:0 "exec '$SEDGE_BIN' --inside-tmux" Enter
+  # Run sedge as the pane's command directly. The earlier form
+  # (`t_keys t:0 "exec '$SEDGE_BIN' --inside-tmux" Enter`) typed the
+  # command into a freshly-spawned login shell, which re-sourced the
+  # host's .zshrc / .bashrc and re-exported the user's real SEDGE_HOME
+  # — silently shadowing the harness's scratch dir. Passing the command
+  # to `new-session` bypasses shell init entirely; the env vars exported
+  # above are inherited by tmux's child process. --inside-tmux skips
+  # sedge's own tmux-detect / auto-attach (SPEC.md §4.10).
+  t new-session -d -s t -x 200 -y 50 "$SEDGE_BIN --inside-tmux"
 
   # Wait for sedge to render. We don't know the exact banner contents
   # without running sedge init, so fall back to "any non-shell text".

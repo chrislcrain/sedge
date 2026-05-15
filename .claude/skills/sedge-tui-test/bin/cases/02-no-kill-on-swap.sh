@@ -14,10 +14,6 @@
 # buildClaudeCmdline). The pgrep count must be 1 before AND after the swap.
 #
 # Caveats handled:
-#  - The harness's launch shell sources ~/.zshrc, which on this dev box
-#    re-exports SEDGE_HOME. harness_setup runs `exec sedge` before that
-#    override loses its grip on the env, so we explicitly C-c, re-export,
-#    and re-exec sedge inside the pane.
 #  - Sedge auto-names sessions as "s<unix-ts>" when the user accepts the
 #    default name. Two creates one second apart can produce identical
 #    names; the case waits a beat between flows.
@@ -26,20 +22,6 @@ set -euo pipefail
 source "$(dirname "$0")/../tmuxq"
 
 # ---- helpers (inline; TODO(tmuxq): extract once a second case needs them) --
-
-# Force-restart sedge inside the harness pane with the harness's env. The
-# default `harness_setup` exec races with .zshrc setting SEDGE_HOME on this
-# host; this scrub guarantees sedge sees our tmpdir.
-relaunch_sedge() {
-  t_keys "$SEDGE_PANE" C-c
-  sleep 0.3
-  t_keys "$SEDGE_PANE" \
-    "export SEDGE_HOME='$SEDGE_HOME' CLAUDE_CONFIG_DIR='$CLAUDE_CONFIG_DIR' PATH='$PATH' SEDGE_BIN='$SEDGE_BIN'" \
-    Enter
-  sleep 0.2
-  t_keys "$SEDGE_PANE" "exec '$SEDGE_BIN' --inside-tmux" Enter
-  wait_for 5 "t_capture '$SEDGE_PANE' | grep -qi 'no projects registered\\|new session'"
-}
 
 mk_repo() {
   local dir="$1"
@@ -98,7 +80,6 @@ create_default_worktree() {
 
 # ---- test body -------------------------------------------------------------
 harness_setup
-relaunch_sedge
 
 REPO_A="$HARNESS_TMP/repo-a"
 REPO_B="$HARNESS_TMP/repo-b"
