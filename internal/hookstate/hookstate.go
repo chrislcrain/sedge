@@ -105,17 +105,20 @@ const (
 	ActivityApprovalPending
 )
 
-// staleAfter caps how long a non-terminal event keeps its "in flight" tag.
-// Past this, we assume the session died and treat it as idle.
-const staleAfter = 10 * time.Minute
-
 // Classify maps the recorded state to UI activity. Pure function — easy to
 // unit-test if we ever feel the urge.
-func Classify(s State) Activity {
+//
+// staleAfter caps how long a non-terminal event keeps its "in flight" tag.
+// Past this, we assume the session died and treat it as idle. When
+// staleAfter <= 0 the demotion is disabled entirely (per SPEC §4.5,
+// `hook_stale_minutes = 0`): the recorded event always wins regardless of
+// how long it has been on disk. Callers thread this in from config.toml's
+// `hook_stale_minutes` (default 10m).
+func Classify(s State, staleAfter time.Duration) Activity {
 	if s.Event == "" {
 		return ActivityIdle
 	}
-	if time.Since(s.At) > staleAfter {
+	if staleAfter > 0 && time.Since(s.At) > staleAfter {
 		return ActivityIdle
 	}
 	switch s.Event {
