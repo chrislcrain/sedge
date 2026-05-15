@@ -87,8 +87,12 @@ func encodeClaudeProject(path string) string {
 
 // HasClaudeHistory reports whether the worktree's Claude session dir
 // (resolved via xdg.ClaudeProjectsDir, which honors $CLAUDE_CONFIG_DIR)
-// exists and contains any session files. Used to decide whether to pass
-// --continue when spawning claude in a worktree.
+// contains a real JSONL conversation transcript. SPEC.md §4.2 / §5.4 say
+// `--continue` is passed iff JSONL history exists, so an over-eager
+// any-entry check would fire `--continue` against an empty session — the
+// claude CLI then errors out, which is exactly the failure mode case 04
+// guards against. We require at least one `*.jsonl` entry with non-zero
+// size; settings files, locks, and zero-byte placeholders are ignored.
 func HasClaudeHistory(wtPath string) bool {
 	projectsDir := xdg.ClaudeProjectsDir()
 	if projectsDir == "" {
@@ -99,5 +103,15 @@ func HasClaudeHistory(wtPath string) bool {
 	if err != nil {
 		return false
 	}
-	return len(entries) > 0
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".jsonl" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.Size() == 0 {
+			continue
+		}
+		return true
+	}
+	return false
 }
