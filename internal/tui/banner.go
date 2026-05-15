@@ -103,10 +103,10 @@ var helpEntries = [][2]string{
 	{"W  ", "orchestrate (plan multi-pane work)"},
 	{"D  ", "delete (recycle)"},
 	{"P  ", "push + open PR"},
-	{"X  ", "kill all · quit"},
+	{"X  ", "kill all sessions, exit"},
 	{"e  ", "edit config"},
 	{"r  ", "reload"},
-	{"q  ", "quit (leave bg)"},
+	{"q  ", "exit, keep sessions alive"},
 }
 
 func renderHelp() string {

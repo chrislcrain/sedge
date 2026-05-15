@@ -264,27 +264,24 @@ type SpawnPlannerOpts struct {
 	Model          string // optional claude --model override
 }
 
-// SpawnOrchestrationPlanner replaces the currently-visible slot subtree
-// with a fresh claude pane configured as an orchestration planner. The
-// previous slot is broken out to its own background window so its
-// conversation/processes are preserved for later swap-back.
+// SpawnOrchestrationPlanner splits a fresh claude pane *below* the
+// worktree's existing slot subtree, primed with the planner system
+// prompt. The existing claude pane is left intact and visible above so
+// the user can still see context. Returns the new planner pane's id.
 //
-// Returns the new planner pane's id.
+// Caller is responsible for first ensuring the worktree is the visible
+// slot (so the planner appears next to claude, not below sedge alone).
 func SpawnOrchestrationPlanner(opts SpawnPlannerOpts) (string, error) {
 	if opts.SedgePaneID == "" {
 		return "", errNoSedgePane
 	}
-	// 1) Park the current slot (if any) in its own background window so
-	//    the user's running claude isn't lost — they can swap back to
-	//    the worktree row later to bring it back.
-	if err := DetachSlotPane(opts.SedgePaneID); err != nil {
-		return "", err
+	target := opts.SedgePaneID
+	if slot, _ := findSlotPane(opts.SedgePaneID); slot != "" {
+		target = slot
 	}
-	// 2) Split a new pane to the right of sedge running a planner-mode
-	//    claude. Use -P -F to capture the new pane id.
 	args := []string{
-		"split-window", "-h",
-		"-t", opts.SedgePaneID,
+		"split-window", "-v", "-l", "40%",
+		"-t", target,
 		"-c", opts.WorktreeDir,
 		"-P", "-F", "#{pane_id}",
 		"--",
@@ -297,15 +294,78 @@ func SpawnOrchestrationPlanner(opts SpawnPlannerOpts) (string, error) {
 		PermissionMode: opts.PermissionMode,
 		Model:          opts.Model,
 	})...)
-	out, err := exec.Command("tmux", args...).Output()
+	out, err := exec.Command("tmux", args...).CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("split-window (planner): %w", err)
+		return "", fmt.Errorf("split-window (planner): %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	paneID := strings.TrimSpace(string(out))
 	if paneID != "" {
 		_, _ = run("select-pane", "-t", paneID)
 	}
 	return paneID, nil
+}
+
+// SpawnWorkerOpts configures a single worker pane spawn for orchestration.
+type SpawnWorkerOpts struct {
+	AnchorPaneID   string // pane to split off — typically the worktree's claude slot pane
+	WorktreeDir    string
+	ProjectPath    string
+	PromptFile     string // per-session system prompt
+	SessionName    string // claude -n value
+	PermissionMode string
+	Model          string
+}
+
+// SpawnOrchestrationWorker adds a worker claude pane to the worktree
+// window by horizontally splitting the anchor pane. Returns the new
+// pane id so the caller can track and focus it. Best-effort layout —
+// tmux will tile as more workers are added.
+func SpawnOrchestrationWorker(opts SpawnWorkerOpts) (string, error) {
+	if opts.AnchorPaneID == "" {
+		return "", fmt.Errorf("anchor pane id empty")
+	}
+	args := []string{
+		"split-window", "-h",
+		"-t", opts.AnchorPaneID,
+		"-c", opts.WorktreeDir,
+		"-P", "-F", "#{pane_id}",
+		"--",
+	}
+	args = append(args, buildClaudeCmdline(SpawnClaudeOpts{
+		WorktreeDir:    opts.WorktreeDir,
+		ProjectPath:    opts.ProjectPath,
+		PromptFile:     opts.PromptFile,
+		SessionName:    opts.SessionName,
+		PermissionMode: opts.PermissionMode,
+		Model:          opts.Model,
+	})...)
+	out, err := exec.Command("tmux", args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("split-window (worker): %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// KillPane kills a specific tmux pane. Used to dismiss the planner
+// pane after a plan is approved (or rejected) so the user's window
+// isn't left cluttered. No-op on empty id or already-gone pane.
+func KillPane(paneID string) error {
+	if paneID == "" {
+		return nil
+	}
+	_, err := run("kill-pane", "-t", paneID)
+	return err
+}
+
+// EvenLayoutTiled re-tiles the panes of windowID using tmux's
+// tiled layout, which spreads N panes across rows+cols evenly. Used
+// after spawning worker panes so the row of workers looks balanced.
+func EvenLayoutTiled(windowID string) error {
+	if windowID == "" {
+		return nil
+	}
+	_, err := run("select-layout", "-t", windowID, "tiled")
+	return err
 }
 
 // paneIDsInWindow returns every pane in the given window, in tmux list

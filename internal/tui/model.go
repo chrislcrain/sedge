@@ -14,6 +14,7 @@ import (
 	"github.com/chrislcrain/sedge/internal/agentlog"
 	"github.com/chrislcrain/sedge/internal/hookstate"
 	"github.com/chrislcrain/sedge/internal/instructions"
+	"github.com/chrislcrain/sedge/internal/orchestration"
 	"github.com/chrislcrain/sedge/internal/project"
 	"github.com/chrislcrain/sedge/internal/tmux"
 	"github.com/chrislcrain/sedge/internal/xdg"
@@ -74,6 +75,7 @@ const (
 	modeConfirmDeleteProject
 	modeConfirmCleanExit
 	modeConfirmShip
+	modeReviewPlan
 )
 
 // branchOption is one row in the modeSelectBranch picker.
@@ -105,6 +107,14 @@ type Model struct {
 	pendingWt        *project.Worktree    // for modeConfirmDelete/modeConfirmShip (which wt)
 	pendingWtP       *project.Project     // for modeConfirmDelete/modeConfirmShip (its project)
 	pendingShipPrev  *project.ShipPreview // dry-run result shown in modeConfirmShip
+
+	// Orchestration (W key) state. Set when the user spawns a planner;
+	// cleared once the plan is approved, rejected, or the user aborts.
+	orchestrateWt     *project.Worktree     // worktree the planner is running in
+	orchestrateP      *project.Project      // its project (needed to spawn workers)
+	orchestratePlanner string               // tmux pane id of the planner — killed on review accept/reject
+	orchestrateSeenMtime time.Time          // last plan.json mtime we acted on (avoids re-firing on stale)
+	pendingPlan       *orchestration.Plan   // the plan currently up for review in modeReviewPlan
 }
 
 func New() (Model, error) {
@@ -174,6 +184,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirmCleanExit(msg)
 		case modeConfirmShip:
 			return m.updateConfirmShip(msg)
+		case modeReviewPlan:
+			return m.updateReviewPlan(msg)
 		}
 		// modeList
 		return m.updateList(msg)
@@ -234,7 +246,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		return m, tea.Batch(loadAllWorktreesCmd(m.cfg), tickCmd())
+		cmds := []tea.Cmd{loadAllWorktreesCmd(m.cfg), tickCmd()}
+		if m.orchestrateWt != nil && m.mode == modeList {
+			cmds = append(cmds, pollPlanCmd(m.orchestrateWt.Path, m.orchestrateSeenMtime))
+		}
+		return m, tea.Batch(cmds...)
+
+	case plannerStartedMsg:
+		wt := msg.wt
+		prj := msg.project
+		m.orchestrateWt = &wt
+		m.orchestrateP = &prj
+		m.orchestratePlanner = msg.planner
+		m.orchestrateSeenMtime = msg.baseline
+		m.status = "planner started — talk to it; sedge will pop the plan when it's saved"
+		return m, tea.Batch(
+			refocusPaneCmd(msg.planner),
+			clearStatusAfter(5*time.Second),
+		)
+
+	case planReadyMsg:
+		if m.orchestrateWt == nil {
+			return m, nil
+		}
+		plan := msg.plan
+		m.pendingPlan = &plan
+		m.orchestrateSeenMtime = msg.mtime
+		m.mode = modeReviewPlan
+		return m, nil
 	}
 	return m, nil
 }
@@ -295,6 +334,17 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.err = fmt.Errorf("not inside tmux; restart sedge from a non-tmux shell")
 				return m, nil
 			}
+			// Re-pressing W resets any in-flight orchestration: kill
+			// the existing planner pane (if any) and clear state so
+			// the user gets a fresh planner.
+			if m.orchestratePlanner != "" {
+				_ = tmux.KillPane(m.orchestratePlanner)
+			}
+			m.orchestrateWt = nil
+			m.orchestrateP = nil
+			m.orchestratePlanner = ""
+			m.orchestrateSeenMtime = time.Time{}
+			m.pendingPlan = nil
 			return m, orchestratePlannerCmd(*r.project, *r.wt, m.cfg)
 		}
 		return m, nil
@@ -510,6 +560,42 @@ func buildBranchOptions(p project.Project, sessionName string) []branchOption {
 	return opts
 }
 
+// updateReviewPlan handles the keystrokes inside modeReviewPlan: Y to
+// spawn the workers per plan, N (or anything else) to discard the plan
+// and leave the planner running so the user can iterate.
+func (m Model) updateReviewPlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		if m.pendingPlan == nil || m.orchestrateWt == nil || m.orchestrateP == nil {
+			m.mode = modeList
+			return m, nil
+		}
+		plan := *m.pendingPlan
+		wt := *m.orchestrateWt
+		prj := *m.orchestrateP
+		planner := m.orchestratePlanner
+		m.mode = modeList
+		m.pendingPlan = nil
+		m.orchestrateWt = nil
+		m.orchestrateP = nil
+		m.orchestratePlanner = ""
+		m.orchestrateSeenMtime = time.Time{}
+		return m, spawnWorkersCmd(prj, wt, plan, planner, m.cfg)
+	case "n", "N", "esc":
+		// Discard the plan but leave the planner pane alive so the
+		// user can iterate. We delete plan.json so the next time the
+		// planner writes one we re-trigger review.
+		if m.orchestrateWt != nil {
+			_ = orchestration.Delete(m.orchestrateWt.Path)
+			m.orchestrateSeenMtime = time.Now()
+		}
+		m.pendingPlan = nil
+		m.mode = modeList
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m Model) updateConfirmShip(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
@@ -721,6 +807,30 @@ func (m Model) renderModePrompt() string {
 	case modeConfirmCleanExit:
 		b.WriteString("\n")
 		b.WriteString(promptStyle.Render("Kill all sedge claude sessions and quit? (y/N)"))
+	case modeReviewPlan:
+		if m.pendingPlan != nil {
+			b.WriteString("\n")
+			b.WriteString(promptStyle.Render(fmt.Sprintf("Plan: %s", m.pendingPlan.Name)))
+			if s := strings.TrimSpace(m.pendingPlan.Summary); s != "" {
+				b.WriteString("\n")
+				b.WriteString(dimStyle.Render("  " + s))
+			}
+			for _, sess := range m.pendingPlan.Sessions {
+				b.WriteString("\n  ")
+				b.WriteString(subAgentStyle.Render("• " + sess.ID))
+				if len(sess.DependsOn) > 0 {
+					b.WriteString(dimStyle.Render(" ← " + strings.Join(sess.DependsOn, ", ")))
+				}
+				task := strings.TrimSpace(sess.Task)
+				if max := 70; len(task) > max {
+					task = task[:max-1] + "…"
+				}
+				b.WriteString("\n    ")
+				b.WriteString(dimStyle.Render(task))
+			}
+			b.WriteString("\n\n")
+			b.WriteString(promptStyle.Render(fmt.Sprintf("Spawn %d worker pane(s)? (y/N)", len(m.pendingPlan.Sessions))))
+		}
 	}
 	return b.String()
 }
@@ -987,12 +1097,31 @@ func spawnSessionCmd(p project.Project, requestedName, branchInput, wtPathInput 
 }
 
 // adhocChatCmd spawns (or re-focuses) a claude session against the project's
-// orchestratePlannerCmd implements `W` on a worktree row: park the
-// worktree's current slot subtree in its own background window and spawn
-// a fresh claude pane configured as an orchestration planner (system
-// prompt instructs it to interview the user and write a plan.json). The
-// user can later swap the worktree back in via Enter to restore the
-// original claude pane(s).
+// plannerStartedMsg fires once the planner pane has been spawned. The
+// model latches enough state to (a) poll for the plan.json file and
+// (b) kill the planner pane after the user reviews the plan.
+type plannerStartedMsg struct {
+	wt       project.Worktree
+	project  project.Project
+	planner  string    // tmux pane id of the planner
+	baseline time.Time // mtime baseline so we only react to NEW plan files
+}
+
+// planReadyMsg fires from the per-tick poller when a fresh plan.json is
+// observed for the orchestrated worktree. The model parses it and opens
+// modeReviewPlan.
+type planReadyMsg struct {
+	plan  orchestration.Plan
+	mtime time.Time
+}
+
+// orchestratePlannerCmd implements `W` on a worktree row. End-to-end:
+//  1. Ensure the target worktree is the visible slot (spawn claude if
+//     it doesn't have a live window yet, then SwapInPane).
+//  2. Split a fresh planner claude pane *below* the existing slot so
+//     the user can still see their main session.
+//  3. Record planner pane id + baseline mtime in the Model so the
+//     per-tick poller can detect the plan.json the planner writes.
 func orchestratePlannerCmd(p project.Project, wt project.Worktree, cfg project.Config) tea.Cmd {
 	return func() tea.Msg {
 		sedgePane := os.Getenv("TMUX_PANE")
@@ -1003,16 +1132,47 @@ func orchestratePlannerCmd(p project.Project, wt project.Worktree, cfg project.C
 		if err != nil {
 			return errMsg{err}
 		}
-		// If the worktree isn't currently the active slot, bring it in
-		// first so the planner ends up where the user expects (right of
-		// sedge). SwapInPane is a no-op when it's already active.
-		if winID, paneID, err := tmux.FindWorktreeWindow(wt.Path); err == nil && paneID != "" {
-			_ = winID
-			if err := tmux.SwapInPane(sedgePane, paneID, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
+		// Ensure the worktree is the visible slot. If no live window
+		// exists yet, spawn a fresh claude background-window so the
+		// planner has a sibling pane to anchor below.
+		_, paneID, err := tmux.FindWorktreeWindow(wt.Path)
+		if err != nil {
+			return errMsg{err}
+		}
+		if paneID == "" {
+			mergedPrompt, err := instructions.Resolve(p.Path, p.Name, wt.SessionName, instructions.DelegationPolicy{
+				MaxParallel: cfg.MaxParallelSubAgents,
+				MaxDepth:    cfg.MaxSubAgentDepth,
+			})
+			if err != nil {
+				return errMsg{err}
+			}
+			agentsJSON, _ := instructions.LoadAgentsJSON()
+			_, paneID, err = tmux.SpawnClaudeWindow(tmux.SpawnClaudeOpts{
+				WorktreeDir:    wt.Path,
+				ProjectPath:    p.Path,
+				PromptFile:     mergedPrompt,
+				SessionName:    wt.SessionName,
+				PermissionMode: cfg.DefaultPermissionMode,
+				Model:          cfg.DefaultModel,
+				AgentsJSON:     agentsJSON,
+				Resume:         project.HasClaudeHistory(wt.Path),
+			})
+			if err != nil {
 				return errMsg{err}
 			}
 		}
-		newPane, err := tmux.SpawnOrchestrationPlanner(tmux.SpawnPlannerOpts{
+		if err := tmux.SwapInPane(sedgePane, paneID, sedgePaneCols(cfg), cfg.SlotWidthPercent); err != nil {
+			return errMsg{err}
+		}
+		// Establish the orchestration directory and capture mtime now
+		// so we only react to *new* plan files.
+		_ = os.MkdirAll(filepath.Join(wt.Path, ".sedge", "orchestration"), 0o755)
+		baseline := time.Now()
+		if info, err := os.Stat(orchestration.PlanPath(wt.Path)); err == nil {
+			baseline = info.ModTime()
+		}
+		planner, err := tmux.SpawnOrchestrationPlanner(tmux.SpawnPlannerOpts{
 			SedgePaneID:    sedgePane,
 			WorktreeDir:    wt.Path,
 			ProjectPath:    p.Path,
@@ -1024,7 +1184,89 @@ func orchestratePlannerCmd(p project.Project, wt project.Worktree, cfg project.C
 		if err != nil {
 			return errMsg{err}
 		}
-		return spawnedMsg{pane: wt.SessionName + " (planner)", paneID: newPane}
+		return plannerStartedMsg{wt: wt, project: p, planner: planner, baseline: baseline}
+	}
+}
+
+// pollPlanCmd checks the orchestrated worktree's plan.json. If it's been
+// rewritten since baseline, the parsed plan flows back as planReadyMsg.
+// Wired into the tick handler so polling is free-piggy-backed on
+// the existing refresh interval.
+func pollPlanCmd(wtPath string, baseline time.Time) tea.Cmd {
+	return func() tea.Msg {
+		info, err := os.Stat(orchestration.PlanPath(wtPath))
+		if err != nil {
+			return nil
+		}
+		if !info.ModTime().After(baseline) {
+			return nil
+		}
+		plan, mt, err := orchestration.LoadAt(wtPath)
+		if err != nil {
+			return errMsg{fmt.Errorf("read plan.json: %w", err)}
+		}
+		if err := plan.Validate(); err != nil {
+			return errMsg{fmt.Errorf("invalid plan: %w", err)}
+		}
+		return planReadyMsg{plan: plan, mtime: mt}
+	}
+}
+
+// spawnWorkersCmd writes one per-session prompt file and spawns one
+// claude pane per session in the orchestrated worktree's window. Each
+// worker's system prompt bakes in its task, dependencies, and the
+// touch-done-marker completion protocol. The planner pane is killed
+// first so workers tile cleanly.
+func spawnWorkersCmd(p project.Project, wt project.Worktree, plan orchestration.Plan, plannerPaneID string, cfg project.Config) tea.Cmd {
+	return func() tea.Msg {
+		// Anchor workers off the worktree's claude pane (the primary
+		// pane in the slot). Find it by cwd.
+		_, anchor, err := tmux.FindWorktreeWindow(wt.Path)
+		if err != nil || anchor == "" {
+			return errMsg{fmt.Errorf("worktree window not found for orchestration")}
+		}
+		// Kill the planner so workers don't fight it for window space.
+		if plannerPaneID != "" {
+			_ = tmux.KillPane(plannerPaneID)
+		}
+		// Make sure the done/ directory exists so workers can touch
+		// into it without racing on mkdir.
+		_ = os.MkdirAll(orchestration.DoneDir(wt.Path), 0o755)
+
+		cacheDir, err := xdg.PromptCacheDir()
+		if err != nil {
+			return errMsg{err}
+		}
+		_ = os.MkdirAll(cacheDir, 0o755)
+
+		var lastPane string
+		for _, sess := range plan.Sessions {
+			promptPath := filepath.Join(cacheDir, fmt.Sprintf("orchestration-%s-%s.md", wt.SessionName, sess.ID))
+			if err := os.WriteFile(promptPath, []byte(orchestration.WorkerPrompt(plan, sess)), 0o644); err != nil {
+				return errMsg{err}
+			}
+			pane, err := tmux.SpawnOrchestrationWorker(tmux.SpawnWorkerOpts{
+				AnchorPaneID:   anchor,
+				WorktreeDir:    wt.Path,
+				ProjectPath:    p.Path,
+				PromptFile:     promptPath,
+				SessionName:    wt.SessionName + "-" + sess.ID,
+				PermissionMode: cfg.DefaultPermissionMode,
+				Model:          cfg.DefaultModel,
+			})
+			if err != nil {
+				return errMsg{fmt.Errorf("spawn worker %q: %w", sess.ID, err)}
+			}
+			lastPane = pane
+		}
+		// Re-tile so the new row of workers is balanced.
+		if winID, _, _ := tmux.FindWorktreeWindow(wt.Path); winID != "" {
+			_ = tmux.EvenLayoutTiled(winID)
+		}
+		// Clear the plan file so a subsequent W produces a fresh plan
+		// instead of immediately re-triggering review on this one.
+		_ = orchestration.Delete(wt.Path)
+		return spawnedMsg{pane: fmt.Sprintf("%d workers for %s", len(plan.Sessions), plan.Name), paneID: lastPane}
 	}
 }
 
