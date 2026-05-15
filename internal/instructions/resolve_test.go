@@ -10,6 +10,7 @@ import (
 func TestResolveLayersAndAppends(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("SEDGE_HOME", filepath.Join(tmp, ".sedge"))
 
 	repo := filepath.Join(tmp, "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
@@ -43,6 +44,7 @@ func TestResolveLayersAndAppends(t *testing.T) {
 func TestResolveMissingFilesYieldsBuiltin(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("SEDGE_HOME", filepath.Join(tmp, ".sedge"))
 	repo := filepath.Join(tmp, "repo")
 	if err := os.MkdirAll(repo, 0o755); err != nil {
 		t.Fatal(err)

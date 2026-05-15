@@ -1,0 +1,26 @@
+{
+  "name": "spec-coverage-bootstrap",
+  "summary": "Stand up the sedge-tui-test harness (run.sh, tmux fixture, stubbed claude+gh, tmuxq helper) and land the first case file covering SPEC.md §5.1 (sedge pane never resizes during a worktree switch). Subsequent plans (001+) cover invariants §5.2 through §5.9 with one Tester session per invariant.",
+  "sessions": [
+    {
+      "id": "harness-scaffold",
+      "task": "Create .claude/skills/sedge-tui-test/bin/run.sh as the case runner (iterates bin/cases/*.sh, runs each in its own SEDGE_HOME + CLAUDE_CONFIG_DIR + isolated tmux server, reports pass/fail). Create bin/stubs/claude and bin/stubs/gh as deterministic no-network stand-ins per the contracts AGENT.md §'Anti-patterns observed' implies. Create bin/lib/tmuxq.sh with helpers that wrap `tmux display-message -p` for pane/window introspection. Files touched: .claude/skills/sedge-tui-test/bin/ only. Acceptance: ./bin/run.sh exits 0 with an empty bin/cases/ directory, no real claude or gh binary is invoked, and the script cleans up its tmux server on exit.",
+      "depends_on": []
+    },
+    {
+      "id": "case-01-pane-width",
+      "task": "Author bin/cases/01-pane-width-stable.sh exercising SPEC.md §5.1: spawn sedge inside the fixture tmux server, create two worktrees with claude panes, swap between them, and assert sedge's pane width (column count) is identical before and after the swap. Use tmuxq helpers from the harness; do not poll JSONL. Files touched: .claude/skills/sedge-tui-test/bin/cases/ and coverage.md. Acceptance: ./bin/run.sh reports case 01 green against current main, and coverage.md maps SPEC.md §5.1 → case 01.",
+      "depends_on": ["harness-scaffold"]
+    },
+    {
+      "id": "case-02-no-kill",
+      "task": "Author bin/cases/02-no-kill-on-swap.sh exercising SPEC.md §5.2: count `pgrep -f 'claude .* -n <session>'` before a worktree switch, perform the switch, assert the count is unchanged. Stubbed claude must accept `-n <session>` for the pgrep to discriminate. Files touched: .claude/skills/sedge-tui-test/bin/cases/ and coverage.md (potentially bin/stubs/claude if -n handling is missing). Acceptance: ./bin/run.sh reports case 02 green against current main, and coverage.md maps SPEC.md §5.2 → case 02.",
+      "depends_on": ["harness-scaffold"]
+    },
+    {
+      "id": "case-03-pane-count",
+      "task": "Author bin/cases/03-pane-count-rehydrates.sh exercising SPEC.md §5.3: open worktree B, manually split a shell (`o`) so it has 2 panes, switch to worktree A, switch back to B, assert B's slot subtree has 2 panes. Files touched: .claude/skills/sedge-tui-test/bin/cases/ and coverage.md. Acceptance: ./bin/run.sh reports case 03 green against current main, and coverage.md maps SPEC.md §5.3 → case 03.",
+      "depends_on": ["harness-scaffold"]
+    }
+  ]
+}

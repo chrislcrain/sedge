@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Helpers for sedge-tui-test cases. Source this from a case script:
+#
+#   source "$(dirname "$0")/../tmuxq"
+#   harness_setup
+#   ... test body ...
+#   harness_teardown
+#
+# Every helper that talks to tmux goes through `t` (named socket) so the
+# harness never collides with the user's real tmux server. harness_setup
+# is responsible for setting SEDGE_HOME, CLAUDE_CONFIG_DIR, and starting
+# the isolated server; harness_teardown kills it (unless KEEP=1).
+
+: "${HARNESS_DIR:?HARNESS_DIR must be set; run via bin/run.sh}"
+: "${SEDGE_BIN:?SEDGE_BIN must be set; run via bin/run.sh}"
+
+TMUX_SOCK="sedge-test-$$"
+HARNESS_TMP=""
+SEDGE_PANE=""
+
+t() { tmux -L "$TMUX_SOCK" "$@"; }
+
+t_keys() {
+  # Usage: t_keys <target> <key-or-literal>...
+  local target="$1"; shift
+  t send-keys -t "$target" "$@"
+}
+
+t_panes() {
+  # Tab-separated: pane_id, window_id, window_name, pane_current_path,
+  # pane_pid, pane_width, pane_height, pane_active
+  t list-panes -a -F '#{pane_id}	#{window_id}	#{window_name}	#{pane_current_path}	#{pane_pid}	#{pane_width}	#{pane_height}	#{pane_active}'
+}
+
+t_capture() {
+  # Usage: t_capture <pane-id-or-target>
+  t capture-pane -p -t "$1"
+}
+
+t_dims() {
+  # Usage: t_dims <pane-id> <field>
+  # field: width, height, left, top, current_path, pid, active, ...
+  t display-message -p -t "$1" "#{pane_$2}"
+}
+
+t_windows() {
+  t list-windows -F '#{window_id}|#{window_name}|#{window_active}'
+}
+
+t_encode() {
+  # Mirror internal/hookstate encode rules: replace separators with `-`.
+  # If sedge's real encode changes, update both sides.
+  echo "$1" | tr '/.~ ' '----'
+}
+
+assert_eq() {
+  # Usage: assert_eq <expected> <actual> <message>
+  if [[ "$1" == "$2" ]]; then
+    printf '  PASS: %s (%s)\n' "$3" "$1"
+  else
+    printf '  FAIL: %s\n    expected: %s\n    actual:   %s\n' "$3" "$1" "$2"
+    return 1
+  fi
+}
+
+assert_neq() {
+  if [[ "$1" != "$2" ]]; then
+    printf '  PASS: %s (%s != %s)\n' "$3" "$1" "$2"
+  else
+    printf '  FAIL: %s (both: %s)\n' "$3" "$1"
+    return 1
+  fi
+}
+
+assert_contains() {
+  # Usage: assert_contains <haystack> <needle> <message>
+  if [[ "$1" == *"$2"* ]]; then
+    printf '  PASS: %s (contains %q)\n' "$3" "$2"
+  else
+    printf '  FAIL: %s\n    needle:   %q\n    haystack: %s\n' "$3" "$2" "$1"
+    return 1
+  fi
+}
+
+wait_for() {
+  # Usage: wait_for <ceiling-seconds> <shell-command-string>
+  # Polls every 0.2s until the command exits 0 or the ceiling is hit.
+  # TIMEOUT diagnostics go to stderr so callers can wrap wait_for in
+  # `$( ... )` for value capture without polluting the capture with a
+  # diagnostic line on a slow predicate.
+  local ceiling="$1"; shift
+  local start=$SECONDS
+  while ! eval "$@" >/dev/null 2>&1; do
+    if (( SECONDS - start >= ceiling )); then
+      printf '  TIMEOUT: wait_for after %ss: %s\n' "$ceiling" "$*" >&2
+      return 1
+    fi
+    sleep 0.2
+  done
+}
+
+harness_setup() {
+  HARNESS_TMP=$(mktemp -d -t sedge-tui-test-XXXXXX)
+  export HARNESS_TMP
+  export SEDGE_HOME="$HARNESS_TMP/.sedge"
+  export CLAUDE_CONFIG_DIR="$HARNESS_TMP/.claude"
+  mkdir -p "$SEDGE_HOME" "$CLAUDE_CONFIG_DIR"
+
+  # Run sedge as the pane's command directly. The earlier form
+  # (`t_keys t:0 "exec '$SEDGE_BIN' --inside-tmux" Enter`) typed the
+  # command into a freshly-spawned login shell, which re-sourced the
+  # host's .zshrc / .bashrc and re-exported the user's real SEDGE_HOME
+  # — silently shadowing the harness's scratch dir. Passing the command
+  # to `new-session` bypasses shell init entirely; the env vars exported
+  # above are inherited by tmux's child process. --inside-tmux skips
+  # sedge's own tmux-detect / auto-attach (SPEC.md §4.10).
+  t new-session -d -s t -x 200 -y 50 "$SEDGE_BIN --inside-tmux"
+
+  # Wait for sedge to render. We don't know the exact banner contents
+  # without running sedge init, so fall back to "any non-shell text".
+  if ! wait_for 5 't_capture t:0 | grep -qiE "sedge|project|worktree"'; then
+    echo '  ERROR: sedge did not produce output inside the harness tmux server'
+    echo '  --- pane capture ---'
+    t_capture t:0 || true
+    echo '  ---'
+    harness_teardown
+    return 1
+  fi
+  SEDGE_PANE=$(t list-panes -t t:0 -F '#{pane_id}' | head -1)
+  export SEDGE_PANE
+}
+
+harness_teardown() {
+  if [[ "${KEEP:-0}" -eq 1 ]]; then
+    cat <<EOF
+  [harness] --keep: server alive at -L $TMUX_SOCK
+            SEDGE_HOME=$SEDGE_HOME
+            attach: tmux -L $TMUX_SOCK attach -t t
+EOF
+    return 0
+  fi
+  t kill-server 2>/dev/null || true
+  if [[ -n "$HARNESS_TMP" && -d "$HARNESS_TMP" ]]; then
+    rm -rf "$HARNESS_TMP"
+  fi
+}
+
+# Default trap: even if a case forgets harness_teardown, kill the server
+# on exit. Cases can override this trap if they need a custom unwind.
+trap 'harness_teardown' EXIT

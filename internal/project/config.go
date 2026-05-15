@@ -17,6 +17,7 @@ type Config struct {
 	SedgeWidthCols        int       `toml:"sedge_width_cols,omitempty"`         // absolute width for the sedge pane (banner + margin). Claude gets window_width minus this. Default 34.
 	MaxParallelSubAgents  int       `toml:"max_parallel_subagents,omitempty"`   // soft cap injected as guidance. mirrors Mux's maxParallelAgentTasks. default 3.
 	MaxSubAgentDepth      int       `toml:"max_subagent_depth,omitempty"`       // mirrors Mux's maxTaskNestingDepth. default 3 (sedge ships sub-agents that hard-stop at depth 1).
+	HookStaleMinutes      int       `toml:"hook_stale_minutes,omitempty"`       // §4.5 crash-fallback threshold for hookstate.Classify. default 10. 0 disables the fallback entirely. negative values are treated as 0.
 	Projects              []Project `toml:"projects,omitempty"`
 }
 
@@ -28,6 +29,7 @@ func defaults() Config {
 		SedgeWidthCols:        34,
 		MaxParallelSubAgents:  3,
 		MaxSubAgentDepth:      3,
+		HookStaleMinutes:      10,
 	}
 }
 
@@ -64,6 +66,14 @@ func Load() (Config, error) {
 	}
 	if cfg.MaxSubAgentDepth <= 0 {
 		cfg.MaxSubAgentDepth = 3
+	}
+	// HookStaleMinutes: 0 is a legitimate value ("disable the
+	// crash-fallback demotion entirely", per SPEC §4.5), so we don't
+	// fall back to a default on 0 the way other fields do. Negative
+	// values aren't meaningful — clamp them to 0 (disabled) rather
+	// than silently snapping to 10, which would hide misconfiguration.
+	if cfg.HookStaleMinutes < 0 {
+		cfg.HookStaleMinutes = 0
 	}
 	return cfg, nil
 }

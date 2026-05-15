@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Fake `gh` for the sedge-tui-test harness. Returns deterministic responses
+# for the subset of commands sedge invokes (PR list/create, auth status).
+# All other gh subcommands silently succeed with no output — cases that need
+# specific behaviour should temporarily replace this stub.
+
+set -u
+
+case "${1:-} ${2:-}" in
+  "pr list")
+    # No existing PR. Matches SPEC.md §4.7 "PR detection" empty-list case.
+    echo '[]'
+    ;;
+  "pr create")
+    echo "https://github.com/test/test/pull/1"
+    ;;
+  "pr view")
+    echo '{"state":"OPEN","url":"https://github.com/test/test/pull/1","number":1}'
+    ;;
+  "auth status")
+    echo "github.com" >&2
+    echo "  Logged in to github.com as fake-user" >&2
+    ;;
+  "--version "*|" "*)
+    echo "gh version 0.0.0-fake-stub"
+    ;;
+  *)
+    # Unknown command: silent success so unrelated invocations don't trip
+    # up cases that aren't testing gh behaviour specifically.
+    ;;
+esac
+exit 0

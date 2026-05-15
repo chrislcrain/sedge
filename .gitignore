@@ -1,6 +1,9 @@
 # compiled binary at repo root (e.g. from `go build`)
 /sedge
 
+# built by the sedge-tui-test harness (bin/run.sh writes here)
+/.claude/skills/sedge-tui-test/bin/sedge
+
 # build artifacts
 /dist/
 /build/

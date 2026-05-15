@@ -939,7 +939,7 @@ func (m *Model) activateRow() tea.Cmd {
 		m.rebuild()
 		m.clampCursor()
 		if m.expanded[r.project.Name] {
-			return loadWorktreesCmd(*r.project)
+			return loadWorktreesCmd(*r.project, m.cfg)
 		}
 		return nil
 	case rowNewSession:
@@ -971,12 +971,15 @@ func (m *Model) activateRow() tea.Cmd {
 
 // ---- commands ----
 
-func loadWorktreesCmd(p project.Project) tea.Cmd {
+func loadWorktreesCmd(p project.Project, cfg project.Config) tea.Cmd {
 	return func() tea.Msg {
 		list, err := project.ListWorktrees(p.Path)
 		if err != nil {
 			return errMsg{err}
 		}
+		// SPEC §4.5: the crash-fallback threshold for stale hook-state
+		// files comes from config (default 10m, 0 disables).
+		staleAfter := time.Duration(cfg.HookStaleMinutes) * time.Minute
 		activePath, _ := tmux.ActiveSlotPath(os.Getenv("TMUX_PANE"))
 		for i := range list {
 			winID, _, _ := tmux.FindWorktreeWindow(list[i].Path)
@@ -995,7 +998,7 @@ func loadWorktreesCmd(p project.Project) tea.Cmd {
 			}
 			if list[i].State == project.WtBackground {
 				if s, ok := hookstate.Read(list[i].Path); ok {
-					switch hookstate.Classify(s) {
+					switch hookstate.Classify(s, staleAfter) {
 					case hookstate.ActivityInFlight:
 						list[i].State = project.WtWaiting
 					case hookstate.ActivityApprovalPending:
@@ -1024,7 +1027,7 @@ func loadWorktreesCmd(p project.Project) tea.Cmd {
 func loadAllWorktreesCmd(cfg project.Config) tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(cfg.Projects))
 	for _, p := range cfg.Projects {
-		cmds = append(cmds, loadWorktreesCmd(p))
+		cmds = append(cmds, loadWorktreesCmd(p, cfg))
 	}
 	return tea.Batch(cmds...)
 }

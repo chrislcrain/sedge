@@ -240,6 +240,12 @@ max_parallel_subagents  = 3                # mirrors Mux's maxParallelAgentTasks
 max_subagent_depth      = 3                # mirrors Mux's maxTaskNestingDepth
                                            # (sedge's built-in agents hard-stop at depth 1)
 
+# hooks
+hook_stale_minutes      = 10               # crash-fallback: treat a session's hook
+                                           # state as stale after N minutes of no
+                                           # hook updates and reclassify from JSONL.
+                                           # 0 disables the fallback. See SPEC §4.5.
+
 [[projects]]
 name           = "sedge"
 path           = "/Users/me/code/sedge"
